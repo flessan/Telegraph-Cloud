@@ -55,6 +55,11 @@ const pushDelayMs = () => prefInterval('pushDelayMs', PUSH_DELAY_DEFAULT_MS, 600
 const pushRetryBaseMs = () => prefInterval('pushRetryBaseMs', PUSH_RETRY_BASE_DEFAULT_MS, 60000);
 const RECENT_MS = 48 * 60 * 60 * 1000;
 const REMOTE_PAGE_SIZE = 100;
+// Text/code previews are read-only and never run as markup (content is written
+// through textContent), so they are safe. A size cap keeps a large log or data
+// file from being slurped into the DOM; bigger text falls back to the generic
+// surface plus Download.
+const TEXT_PREVIEW_MAX = 512 * 1024;
 
 const state = {
   items: [],
@@ -63,6 +68,7 @@ const state = {
   remoteComplete: false,
   remoteLoading: false,
   remoteError: false,
+  remoteReady: false,       // true once the initial remote index fetch has settled
   remoteLoaded: 0,
   session: null,
   albumId: null,          // album currently open in the Albums view (null = root)
@@ -98,6 +104,7 @@ let pushQueue = null;      // sequential upload queue (js/push-queue.js)
 let queueTicker = null;    // countdown/ETA ticker while a push is running
 let activeUpload = null;   // in-flight XHR, kept so state stays inspectable
 let stageSeq = 0;          // monotonic staging order, independent of the clock
+let textPreviewSeq = 0;    // invalidates stale async text-preview loads
 
 const $ = (id) => document.getElementById(id);
 
@@ -306,6 +313,22 @@ function extOf(name) {
   return parts.length > 1 ? parts.pop().toUpperCase().slice(0, 5) : 'FILE';
 }
 
+/**
+ * A short, translated, human-friendly label for an object's kind, e.g.
+ * "Image", "PDF document", "Archive". Falls back to "File" for anything
+ * unrecognised. Used for the grid card meta line and the list "Type" column.
+ */
+function itemTypeLabel(item) {
+  if (!item) return t('unknownType');
+  return t(categoryLabelKey(itemCategory(item)));
+}
+
+/** A slightly richer description used as hover detail for a file node. */
+function itemTypeDetail(item) {
+  if (!item) return '';
+  return item.type || String(itemTypeLabel(item));
+}
+
 function formatSize(bytes) {
   const n = Number(bytes) || 0;
   if (n < 1024) return t('bytes', { n });
@@ -406,6 +429,92 @@ function formatLink(item, format) {
     mime: item.type,
     category: itemCategory(item),
   }, format);
+}
+
+/** Reads a local Blob/File as UTF-8 text; resolves null when it cannot. */
+function readFileText(blob) {
+  if (blob && typeof blob.text === 'function') {
+    return blob.text().then((text) => String(text), () => null);
+  }
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => resolve(null);
+    try { reader.readAsText(blob); } catch (_) { resolve(null); }
+  });
+}
+
+/**
+ * Whether a file warrants an inline text/code preview: a genuine text-like
+ * object that is small enough to read, and whose bytes are reachable (a staged
+ * local file or a published remote URL). Images/audio/video/pdf keep their own
+ * richer surfaces.
+ */
+function isTextPreviewable(item) {
+  return itemCategory(item) === CATEGORY.TEXT
+    && Number(item.size || 0) <= TEXT_PREVIEW_MAX
+    && !!((item.file) || item.url);
+}
+
+/**
+ * Read-only text/code surface. Content is always injected via `textContent`,
+ * never innerHTML, so an untrusted file cannot inject markup or script into
+ * the admin page. Oversized/unreadable files degrade to a caption plus the
+ * dialog's Download action rather than a blank surface.
+ */
+function previewTextSurface(item) {
+  const wrap = document.createElement('div');
+  wrap.className = 'preview-text';
+
+  const caption = document.createElement('p');
+  caption.className = 'preview-caption';
+  caption.setAttribute('role', 'status');
+  caption.textContent = t('previewTextLoading');
+  wrap.appendChild(caption);
+
+  const pre = document.createElement('pre');
+  pre.className = 'preview-text-body';
+  pre.setAttribute('aria-label', t('previewTextAria', { name: item.name }));
+  pre.tabIndex = 0;
+  wrap.appendChild(pre);
+
+  const token = ++textPreviewSeq;
+  (async () => {
+    let text;
+    if (item.file) {
+      text = await readFileText(item.file);
+    } else if (item.url) {
+      try {
+        const res = await fetch(item.url, { headers: { Accept: '*/*' }, cache: 'no-cache' });
+        text = res.ok ? await res.text() : null;
+      } catch (_) { text = null; }
+    } else {
+      text = null;
+    }
+    // The preview may have moved on (opened another file, closed) while the
+    // bytes were loading; only populate if this request is still current.
+    if (textPreviewSeq !== token || state.previewId !== item.id) return;
+    if (text == null) {
+      caption.textContent = t('previewTextFailed');
+      pre.remove();
+      return;
+    }
+    caption.remove();
+    pre.textContent = text === '' ? t('previewTextEmpty') : text;
+  })();
+
+  return wrap;
+}
+
+/** Clears the active search and re-renders, restoring the unfiltered view. */
+function clearSearch({ focus = false } = {}) {
+  const search = $('search');
+  if (search) search.value = '';
+  state.query = '';
+  const wrap = $('search-wrap');
+  if (wrap) wrap.classList.remove('expanded');
+  render();
+  if (focus && search) search.focus();
 }
 
 function escapeHtml(text) {
@@ -1366,6 +1475,7 @@ async function loadRemotePage(reset = false) {
     return false;
   } finally {
     state.remoteLoading = false;
+    if (reset) state.remoteReady = true;
     render();
   }
 }
@@ -2370,6 +2480,51 @@ function renderTools(stage) {
   stage.replaceChildren(section);
 }
 
+/**
+ * The views that surface remote-store records directly. When they have nothing
+ * to show yet, a brief loading skeleton (or an error state with a retry) beats
+ * flashing a premature "this is empty".
+ */
+const REMOTE_BACKED_VIEWS = ['files', 'images', 'whitelist', 'blacklist'];
+
+function renderRemoteLoading(stage) {
+  stage.replaceChildren();
+  stage.setAttribute('aria-busy', 'true');
+  const note = document.createElement('p');
+  note.className = 'stage-status';
+  note.setAttribute('role', 'status');
+  note.textContent = t('remoteLoading');
+  const grid = document.createElement('div');
+  grid.className = 'file-grid is-loading';
+  for (let i = 0; i < 8; i += 1) {
+    const card = document.createElement('div');
+    card.className = 'skeleton-card';
+    card.setAttribute('aria-hidden', 'true');
+    grid.appendChild(card);
+  }
+  stage.append(note, grid);
+}
+
+function renderRemoteError(stage) {
+  stage.replaceChildren();
+  stage.removeAttribute('aria-busy');
+  const wrap = document.createElement('div');
+  wrap.className = 'empty empty-error';
+  wrap.innerHTML = '<div class="empty-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v8A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-10z"/><path d="M12 9v3M12 15h.01"/></svg></div>';
+  const h = document.createElement('h2');
+  h.textContent = t('loadFailedTitle');
+  const p = document.createElement('p');
+  p.textContent = t('remoteLoadFailed');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn tonal';
+  btn.textContent = t('retry');
+  btn.style.marginTop = '16px';
+  btn.addEventListener('click', () => refreshWorkspace());
+  wrap.append(h, p, btn);
+  stage.appendChild(wrap);
+}
+
 function renderBrowser() {
   const stage = $('file-stage');
   const items = visibleItems();
@@ -2381,7 +2536,23 @@ function renderBrowser() {
     return;
   }
 
+  stage.removeAttribute('aria-busy');
+
   if (!items.length) {
+    // While the remote index is still settling, keep a search active on its
+    // own empty copy (so "Clear search" stays the obvious recovery).
+    const remoteGated = REMOTE_BACKED_VIEWS.indexOf(state.view) !== -1;
+    if (remoteGated && !state.query) {
+      if (!state.remoteReady && !state.remoteError) {
+        renderRemoteLoading(stage);
+        return;
+      }
+      if (state.remoteError && state.remoteLoaded === 0) {
+        renderRemoteError(stage);
+        return;
+      }
+    }
+
     const empty = emptyCopy();
     stage.innerHTML = '';
     const wrap = document.createElement('div');
@@ -2393,10 +2564,14 @@ function renderBrowser() {
     p.textContent = empty.body;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'btn tonal';
+    const searching = !!state.query && empty.title === t('emptySearchTitle');
+    btn.textContent = t(searching ? 'clearSearch' : 'addFiles');
+    btn.className = 'btn ' + (searching ? 'outlined' : 'tonal');
     btn.style.marginTop = '16px';
-    btn.textContent = t('addFiles');
-    btn.addEventListener('click', () => $('file-input').click());
+    btn.addEventListener('click', () => {
+      if (searching) clearSearch({ focus: true });
+      else $('file-input').click();
+    });
     wrap.appendChild(h);
     wrap.appendChild(p);
     wrap.appendChild(btn);
@@ -2565,7 +2740,11 @@ function buildCard(item) {
   name.textContent = item.name;
   const meta = document.createElement('div');
   meta.className = 'card-meta';
-  meta.textContent = formatSize(item.size) + ' · ' + (item.status === 'synced' ? t('locationRemote') : t('locationLocal'));
+  const detail = isImage(item) && item.width && item.height
+    ? item.width + ' × ' + item.height
+    : itemTypeLabel(item);
+  meta.textContent = formatSize(item.size) + ' · ' + detail;
+  meta.title = itemTypeDetail(item);
   body.appendChild(name);
   body.appendChild(meta);
   if (item.albumId) body.appendChild(albumBadge(item));
@@ -2681,7 +2860,8 @@ function buildRow(item) {
 
   const type = document.createElement('div');
   type.className = 'list-cell hide-sm';
-  type.textContent = item.type || t('unknownType');
+  type.textContent = itemTypeLabel(item);
+  type.title = itemTypeDetail(item);
 
   const added = document.createElement('div');
   added.className = 'list-cell hide-sm';
@@ -2737,6 +2917,71 @@ function bindItemOpen(el, item) {
       state.lastSelectedId = item.id;
     }
   });
+}
+
+/** The visible file cards/list rows in the browser stage, in list order. */
+function browserNodeList() {
+  const wanted = new Set(visibleItems().map((i) => i.id));
+  const out = [];
+  document.querySelectorAll('#file-stage .file-card, #file-stage .list-row').forEach((el) => {
+    if (el.dataset.id && wanted.has(el.dataset.id)) out.push(el);
+  });
+  return out;
+}
+
+function focusBrowserNode(node) {
+  if (!node) return;
+  node.focus();
+  if (node.dataset.id) state.lastSelectedId = node.dataset.id;
+}
+
+/**
+ * Keyboard movement & safe removal for the file browser. Moves with the arrow
+ * keys / Home / End (focus only — it never changes the selection), and maps
+ * Delete/Backspace to the guarded "remove from workspace" confirmation. Only
+ * active when a card/row itself is the focused element and no dialog is open.
+ */
+function handleBrowserKey(event) {
+  const target = event.target;
+  if (!target || !target.classList) return false;
+  if (isTyping(target)) return false;
+  if (target !== document.activeElement) return false;
+  if (!(target.classList.contains('file-card') || target.classList.contains('list-row'))) return false;
+  if (activeMenu) return false;
+  if (!$('preview-dialog').hidden || !$('confirm-dialog').hidden || !$('command-dialog').hidden
+    || !$('album-dialog').hidden || !$('move-dialog').hidden || !$('rename-dialog').hidden) return false;
+
+  const key = event.key;
+  const moving = key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft'
+    || key === 'ArrowRight' || key === 'Home' || key === 'End';
+  if (moving) {
+    const nodes = browserNodeList();
+    if (!nodes.length) return true;
+    const idx = Math.max(0, nodes.findIndex((n) => n.dataset.id === target.dataset.id));
+    let next;
+    if (key === 'Home') next = nodes[0];
+    else if (key === 'End') next = nodes[nodes.length - 1];
+    else {
+      const delta = (key === 'ArrowDown' || key === 'ArrowRight') ? 1 : -1;
+      next = nodes[(idx + delta + nodes.length) % nodes.length];
+    }
+    event.preventDefault();
+    focusBrowserNode(next);
+    return true;
+  }
+
+  if (key === 'Delete' || key === 'Backspace') {
+    const item = findItem(target.dataset.id);
+    if (!item) return true;
+    event.preventDefault();
+    if (state.selected.size > 1 && state.selected.has(item.id)) {
+      askRemoveMany(Array.from(state.selected));
+    } else {
+      askRemove(item);
+    }
+    return true;
+  }
+  return false;
 }
 
 function toggleSelect(id, on) {
@@ -2899,13 +3144,17 @@ function fillPreview(item) {
   $('meta-dims').textContent = item.width && item.height ? item.width + ' × ' + item.height : t('noDimensions');
   $('meta-mime').textContent = item.type || t('unknownType');
   $('meta-size').textContent = formatSize(item.size);
+  const addedEl = $('meta-added');
+  if (addedEl) addedEl.textContent = item.addedAt ? formatWhen(item.addedAt) : t('notAvailable');
+  const pushedEl = $('meta-pushed');
+  if (pushedEl) pushedEl.textContent = item.pushedAt ? formatWhen(item.pushedAt) : t('notAvailable');
   $('meta-status').textContent = itemStateLabel(item) + (item.error ? ' — ' + item.error : '');
   $('meta-url').value = item.url || t('noPublicUrl');
 
   const stage = $('preview-stage');
   stage.classList.toggle('zoomed', !!state.previewZoom);
   stage.replaceChildren();
-  stage.appendChild(buildPreviewSurface(item));
+  stage.appendChild(isTextPreviewable(item) ? previewTextSurface(item) : buildPreviewSurface(item));
 
   const copyBtn = $('preview-copy');
   copyBtn.disabled = !item.url;
@@ -3310,14 +3559,15 @@ async function refreshWorkspace() {
     state.remoteCursor = null;
     state.remoteComplete = false;
     state.remoteError = null;
+    state.remoteReady = false;
     state.remoteLoaded = 0;
     state.items = state.items.filter((item) => !item.remoteOnly);
+    render();
     await loadRemotePage(true);
     showToast(t('refreshed'));
   } catch (_) {
     showToast(t('refreshFailed'));
   }
-  render();
 }
 
 async function loadConfig() {
@@ -3513,13 +3763,7 @@ function wireEvents() {
     renderChrome();
     renderBrowser();
   });
-  $('search-clear').addEventListener('click', () => {
-    search.value = '';
-    state.query = '';
-    $('search-wrap').classList.remove('expanded');
-    render();
-    search.focus();
-  });
+  $('search-clear').addEventListener('click', () => clearSearch({ focus: true }));
   $('mobile-search-toggle').addEventListener('click', () => {
     $('search-wrap').classList.add('expanded');
     search.focus();
@@ -3551,6 +3795,7 @@ function wireEvents() {
   });
 
   document.addEventListener('keydown', (event) => {
+    if (handleBrowserKey(event)) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       openCommandPalette();

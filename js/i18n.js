@@ -563,6 +563,10 @@ const STRINGS = {
     previewPdfAria: 'PDF preview of {name}',
     previewOpenExternally: 'Open in a new tab',
     previewNoInline: 'No inline preview for this type',
+    previewTextLoading: 'Loading text preview…',
+    previewTextFailed: 'This file could not be read. Use Download to open the original.',
+    previewTextEmpty: '(empty file)',
+    previewTextAria: 'Read-only text preview of {name}',
   },
   id: {
     landingSkip: 'Lompat ke konten',
@@ -1125,6 +1129,10 @@ const STRINGS = {
     previewPdfAria: 'Pratinjau PDF dari {name}',
     previewOpenExternally: 'Buka di tab baru',
     previewNoInline: 'Tidak ada pratinjau langsung untuk jenis ini',
+    previewTextLoading: 'Memuat pratinjau teks…',
+    previewTextFailed: 'Berkas ini tidak dapat dibaca. Gunakan Unduh untuk membuka berkas aslinya.',
+    previewTextEmpty: '(berkas kosong)',
+    previewTextAria: 'Pratinjau teks hanya-baca untuk {name}',
   },
 };
 

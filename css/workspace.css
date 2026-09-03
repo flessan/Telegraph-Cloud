@@ -860,6 +860,31 @@ body { overflow: hidden; }
   text-align: center;
 }
 a.preview-caption { text-decoration: underline; }
+/* Read-only text/code preview. Content is rendered as plain text, so the block
+   simply needs readable monospace typography and scrolling for long files. */
+.preview-text {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  text-align: left;
+}
+.preview-text .preview-caption { text-align: left; }
+.preview-text-body {
+  margin: 0;
+  max-height: min(58vh, 520px);
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--radius-xs);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  font: 13px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.preview-text-body:focus-visible { outline: none; box-shadow: var(--focus); }
 
 @media (max-width: 820px) {
   .push-panel { margin: 0 var(--space-3) var(--space-3); }
@@ -1408,4 +1433,201 @@ a.preview-caption { text-decoration: underline; }
 
 @media (prefers-reduced-motion: reduce) {
   .admin-workspace .sidebar { transition: none; }
+}
+
+/* ==========================================================================
+   Workspace polish — browser, selection, loading/error states
+   Components below previously had no layout rules in the stylesheet actually
+   loaded by /admin (their CSS lived in admin.css, which is not used here), so
+   the selection bulk bar, the offline banner and the Changes panel rendered
+   unstyled. These rules give them a calm, consistent treatment.
+   ========================================================================== */
+
+/* ---------- offline banner ---------- */
+.offline-banner {
+  margin: var(--space-2) var(--space-5) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  font: var(--type-label-lg);
+  line-height: 1.5;
+}
+.offline-banner[hidden] { display: none; }
+
+/* ---------- selection / bulk action bar ---------- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-2) var(--space-5);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.bulk-bar[hidden] { display: none; }
+.bulk-bar #bulk-count {
+  font: var(--type-label-lg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+.bulk-actions .btn { min-height: 36px; padding: 0 14px; }
+.bulk-actions .btn.remote-bulk.text { color: inherit; opacity: 0.92; }
+.bulk-actions .btn.remote-bulk.text:hover { background: color-mix(in srgb, var(--md-sys-color-on-primary-container) 10%, transparent); }
+.bulk-actions .btn[disabled] { opacity: 0.45; }
+#bulk-delete.btn.text { color: var(--md-sys-color-on-error-container); }
+
+/* ---------- Changes panel (review list) ---------- */
+.changes-panel {
+  margin: 0 var(--space-5) var(--space-4);
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.changes-panel[hidden] { display: none; }
+.changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container);
+}
+.changes-head h2 { margin: 0; font: var(--type-title-sm); }
+.changes-head p { margin: 2px 0 0; font: var(--type-label); color: var(--md-sys-color-on-surface-variant); }
+.changes-actions { display: flex; gap: var(--space-1); }
+.changes-list { margin: 0; padding: 0; list-style: none; }
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  min-width: 0;
+}
+.change-row:last-child { border-bottom: 0; }
+.change-row:hover { background: var(--md-sys-color-surface-container-low); }
+.change-row .list-thumb { flex: none; }
+.change-name { flex: 1; min-width: 0; font: var(--type-title-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.change-meta { flex: none; font: var(--type-label); color: var(--md-sys-color-on-surface-variant); }
+.change-actions { flex: none; display: flex; gap: var(--space-1); }
+
+/* ---------- loading skeleton & stage status ---------- */
+.stage-status {
+  margin: 0 0 var(--space-3);
+  font: var(--type-label-lg);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.file-grid.is-loading { align-items: start; pointer-events: none; }
+.skeleton-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-surface-container-high);
+  min-height: 180px;
+}
+.skeleton-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent,
+    color-mix(in srgb, var(--md-sys-color-on-surface) 7%, transparent), transparent);
+  animation: skeleton-sweep 1.3s ease-in-out infinite;
+}
+@keyframes skeleton-sweep { 100% { transform: translateX(100%); } }
+
+.empty-error .empty-mark {
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+
+/* ---------- grid/list interaction refinement ---------- */
+.file-grid { gap: var(--space-4) var(--space-3); }
+.file-card { background: var(--md-sys-color-surface-container-lowest); }
+.file-card:hover { border-color: var(--md-sys-color-outline-variant); transform: translateY(-1px); }
+.file-card.selected:hover { border-color: var(--md-sys-color-primary); }
+.file-card.selected { box-shadow: var(--elev-1); }
+.file-card.selected .card-name { color: var(--md-sys-color-primary); }
+.card-body { padding: 12px 14px 14px; }
+.card-name { font-weight: 600; }
+.card-meta { font-variant-numeric: tabular-nums; }
+
+/* list view */
+.list-head, .list-row {
+  grid-template-columns: 34px 52px minmax(0, 1.5fr) 92px 110px 136px 104px 40px;
+  column-gap: var(--space-3);
+  padding: 0 var(--space-4);
+}
+.list-row { transition: background 120ms ease-out; }
+.list-row.selected { box-shadow: inset 3px 0 0 var(--md-sys-color-primary); }
+.list-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--md-sys-color-primary); }
+.list-row.selected:focus-visible { box-shadow: inset 0 0 0 2px var(--md-sys-color-primary), inset 3px 0 0 var(--md-sys-color-primary); }
+.list-row .list-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.list-row .album-badge { max-width: 45%; }
+.list-thumb { box-shadow: inset 0 0 0 1px var(--md-sys-color-outline-variant); }
+.list-thumb .file-glyph { height: auto; padding: 6px; }
+
+/* toolbar: consistent spacing and visible focus */
+.toolbar { row-gap: var(--space-2); }
+.toolbar-actions { column-gap: var(--space-2); row-gap: var(--space-2); }
+.toolbar-actions :is(button, a):focus-visible,
+.header-actions .icon-btn:focus-visible,
+.segmented button:focus-visible { outline: none; box-shadow: var(--focus); }
+.select:focus-visible { outline: none; border: 1px solid var(--md-sys-color-primary); box-shadow: var(--focus); }
+.segmented button svg { width: 19px; height: 19px; }
+
+/* links (results) card footer actions sit right-aligned below the output */
+#results-card .toolbar-actions,
+.links-actions { margin-top: 12px; justify-content: flex-end; }
+
+/* file-type glyphs read better a touch quieter and smaller */
+.file-glyph .ext { letter-spacing: 0.06em; }
+
+/* ---------- responsive refinements ---------- */
+@media (max-width: 820px) {
+  .bulk-bar { margin: var(--space-2) var(--space-3); }
+  .changes-panel { margin-left: var(--space-3); margin-right: var(--space-3); }
+  .offline-banner { margin-left: var(--space-3); margin-right: var(--space-3); }
+  .change-row { padding: var(--space-3); }
+  .list-row { min-height: 60px; }
+}
+@media (max-width: 640px) {
+  .bulk-actions { gap: var(--space-2); }
+  .bulk-actions .btn { flex: 1 1 auto; min-width: 0; }
+  .change-meta { display: none; }
+  .skeleton-card { min-height: 150px; }
+  /* Keep the compact single-line mobile list (defined above, but the desktop
+     grid-template override later in the file would otherwise win). On small
+     screens the size/type/added cells are hidden, so a row shows five items:
+     checkbox, thumb, name, status chip, more-icon — five real tracks so the
+     "more" icon no longer wraps onto an implicit second row. */
+  .list-head, .list-row {
+    grid-template-columns: 26px 40px minmax(0, 1fr) auto 40px;
+    column-gap: var(--space-2);
+    padding: 0 var(--space-2);
+  }
+  .list-row { min-height: 60px; }
+  .list-row .status-chip { max-width: 110px; overflow: hidden; }
+  .file-grid { gap: var(--space-2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-card::after { animation: none; }
+  .file-card, .list-row { transition: none; }
+  .file-card:hover { transform: none; }
 }
