@@ -1,5 +1,5 @@
-import { createDeveloperApiKeyService } from '../../cloud/developer-api-keys.js';
-import { CloudForbiddenError, CloudUnauthorizedError, isTelegraphCloudError } from '../../cloud/errors.js';
+import { authenticateDeveloperBearer } from '../../cloud/developer-auth.js';
+import { isTelegraphCloudError } from '../../cloud/errors.js';
 import { isEmptyBinding, jsonResponse } from '../../utils/http.js';
 import { authenticateRequest } from '../../utils/session.js';
 
@@ -49,29 +49,10 @@ function databaseErrorBody(error) {
   return body;
 }
 
-function bearerCredential(request) {
-  const authorization = request.headers.get('Authorization');
-  if (authorization === null) return { supplied: false, credential: null };
-  // Treat any Bearer attempt as developer authentication, even when malformed.
-  // It must never fall through to dashboard Basic/session auth or a query token.
-  if (/^Bearer(?:\s|$)/i.test(authorization)) {
-    const match = /^Bearer\s+([^\s]+)\s*$/i.exec(authorization);
-    return { supplied: true, credential: match ? match[1] : null };
-  }
-  return { supplied: false, credential: null };
-}
-
 function requiredScope(method) {
   if (method === 'GET' || method === 'HEAD') return 'db:read';
   if (method === 'POST' || method === 'PATCH' || method === 'DELETE') return 'db:write';
   return null;
-}
-
-function developerApiKeysForContext(context) {
-  // Internal test/composition seam only. Production obtains this service from
-  // TELEGRAPH_CLOUD_KV and API_KEY_PEPPER for each request; it never accepts
-  // caller input as service configuration.
-  return context.data?.developerApiKeys || createDeveloperApiKeyService(context.env);
 }
 
 /**
@@ -87,17 +68,13 @@ function developerApiKeysForContext(context) {
  */
 export async function databaseAuthentication(context) {
   const { request, env = {} } = context;
-  const bearer = bearerCredential(request);
+  const authentication = await authenticateDeveloperBearer(context, {
+    scope: requiredScope(request.method),
+    forbiddenCode: 'api_key_scope_forbidden',
+    forbiddenMessage: 'This API key does not have permission for this operation.',
+  });
 
-  if (bearer.supplied) {
-    if (!bearer.credential) {
-      throw new CloudUnauthorizedError('invalid_api_key', 'A valid developer API key is required.');
-    }
-    const authentication = await developerApiKeysForContext(context).authenticate(bearer.credential);
-    const scope = requiredScope(request.method);
-    if (scope && !authentication.scopes.includes(scope)) {
-      throw new CloudForbiddenError('api_key_scope_forbidden', 'This API key does not have permission for this operation.');
-    }
+  if (authentication) {
     context.data = context.data || {};
     context.data.databaseAuthentication = authentication;
     return context.next();

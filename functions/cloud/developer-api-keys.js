@@ -30,7 +30,10 @@ export const API_KEY_INDEX_NAMESPACES = Object.freeze({
   lookup: 'api-key-lookup',
   project: 'project-api-key',
 });
-export const API_KEY_SCOPES = Object.freeze(['db:read', 'db:write']);
+// New keys retain the established database-only default. Storage access is
+// opt-in so adding Phase 4 does not silently widen the authority of a newly
+// issued developer credential.
+export const API_KEY_SCOPES = Object.freeze(['db:read', 'db:write', 'storage:read', 'storage:write']);
 export const DEFAULT_API_KEY_SCOPES = Object.freeze(['db:read', 'db:write']);
 
 const API_KEY_STATUS = new Set(['active', 'revoked']);
@@ -191,6 +194,23 @@ function safePrefix(keyId) {
   // The public component stops before the random secret. The ellipsis makes it
   // impossible to mistake this display value for a credential that can work.
   return `tg_live_${keyId}…`;
+}
+
+function lookupSegment(verifier) {
+  // HMAC base64url may begin with '-' or '_', while Cloud index segments are
+  // deliberately required to begin with an alphanumeric character. Always use
+  // a versioned-safe prefix for new records: conditional prefixing could let a
+  // raw verifier beginning with that prefix collide with a prefixed one.
+  return `h_${verifier}`;
+}
+
+function legacyLookupSegment(verifier) {
+  // Phase 3 originally stored successful lookup records at the raw verifier
+  // segment. Those could only have begun with an alphanumeric character, since
+  // the index would reject the other form during creation. Retain a read-only
+  // fallback so existing valid deployments do not lose authentication when the
+  // safe prefix is introduced.
+  return /^[A-Za-z0-9]/.test(verifier) ? verifier : null;
 }
 
 function publicKey(metadata) {
@@ -412,6 +432,13 @@ export function createDeveloperApiKeyService(env, {
     }
   }
 
+  async function readLookupForVerifier(verifier) {
+    const current = await getIndex(API_KEY_INDEX_NAMESPACES.lookup, lookupSegment(verifier));
+    if (current !== null) return current;
+    const legacy = legacyLookupSegment(verifier);
+    return legacy ? getIndex(API_KEY_INDEX_NAMESPACES.lookup, legacy) : null;
+  }
+
   async function putIndex(namespace, segments, value, options) {
     try {
       await index.putJson(namespace, segments, value, options);
@@ -496,7 +523,7 @@ export function createDeveloperApiKeyService(env, {
     try {
       await putIndex(API_KEY_INDEX_NAMESPACES.key, [keyId], metadata);
       wroteKey = true;
-      await putIndex(API_KEY_INDEX_NAMESPACES.lookup, [verifier], {
+      await putIndex(API_KEY_INDEX_NAMESPACES.lookup, [lookupSegment(verifier)], {
         schema: API_KEY_LOOKUP_SCHEMA,
         key_id: keyId,
         project_id: safeProjectId,
@@ -514,7 +541,7 @@ export function createDeveloperApiKeyService(env, {
       // avoids an active but unrecoverable credential after a KV write failure.
       const cleanups = [];
       if (wroteProjectEntry) cleanups.push(removeIndex(API_KEY_INDEX_NAMESPACES.project, safeProjectId, keyId));
-      if (wroteLookup) cleanups.push(removeIndex(API_KEY_INDEX_NAMESPACES.lookup, verifier));
+      if (wroteLookup) cleanups.push(removeIndex(API_KEY_INDEX_NAMESPACES.lookup, lookupSegment(verifier)));
       if (wroteKey) cleanups.push(removeIndex(API_KEY_INDEX_NAMESPACES.key, keyId));
       await Promise.allSettled(cleanups);
       throw error;
@@ -595,7 +622,8 @@ export function createDeveloperApiKeyService(env, {
     // Status is checked after lookup, so failure to remove a stale lookup does
     // not restore access. KV propagation still bounds real-world revocation.
     try {
-      await removeIndex(API_KEY_INDEX_NAMESPACES.lookup, metadata.verifier);
+      const segments = [lookupSegment(metadata.verifier), legacyLookupSegment(metadata.verifier)].filter(Boolean);
+      await Promise.allSettled(segments.map((segment) => removeIndex(API_KEY_INDEX_NAMESPACES.lookup, segment)));
     } catch (_) { /* safe best-effort lookup cleanup */ }
     return publicKey(revoked);
   }
@@ -629,7 +657,7 @@ export function createDeveloperApiKeyService(env, {
       throw new CloudUnauthorizedError('invalid_api_key', 'A valid developer API key is required.');
     }
     const verifier = await verifierFor(credential);
-    const lookupValue = await getIndex(API_KEY_INDEX_NAMESPACES.lookup, verifier);
+    const lookupValue = await readLookupForVerifier(verifier);
     if (lookupValue === null) {
       throw new CloudUnauthorizedError('invalid_api_key', 'A valid developer API key is required.');
     }

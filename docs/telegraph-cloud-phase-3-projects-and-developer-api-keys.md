@@ -14,7 +14,7 @@ Phase 3 adds project boundaries and developer credentials to the additive Telegr
 - continued, explicitly separate Phase 2 dashboard/session/Basic access to the pre-Phase-3 **unscoped legacy** document namespace;
 - bounded, isolate-local mutation guards and telemetry defense-in-depth redaction.
 
-It deliberately does **not** implement object storage/S3 routes, buckets, presigned URLs, multipart uploads, a dashboard redesign, API playground, analytics, billing, SDKs, SQL, joins, or distributed rate limiting.
+Phase 3 itself did not implement object storage. Phase 4 now adds a separate generic object engine under `/api/storage/*`; see the [Phase 4 object-storage reference](telegraph-cloud-phase-4-object-storage.md). Neither phase implements S3 compatibility, bucket-management routes, presigned URLs, multipart uploads, a dashboard redesign, API playground, analytics, billing, SDKs, SQL, joins, or distributed rate limiting.
 
 ## Architecture and authority boundaries
 
@@ -70,8 +70,8 @@ Configure these in Cloudflare Pages and redeploy after changing them:
 | --- | --- | --- |
 | `TELEGRAPH_CLOUD_KV` KV binding | projects, keys, database materialization | A dedicated namespace, separate from `img_url`. |
 | `API_KEY_PEPPER` secret | developer-key create/verify/rotate | A non-empty random secret of at least 32 UTF-8 bytes. Generate and store it only as a Pages secret, for example `openssl rand -base64 48`. Never place it in browser code, a static file, Telegram, or a document. |
-| `TG_Bot_Token` secret | document mutation journal | Existing server-side Bot API token; never expose it. |
-| `TG_Chat_ID` binding/secret | document mutation journal | Chat/channel where the bot can append revision documents. |
+| `TG_Bot_Token` secret | document journal and Phase 4 object byte/event transport | Existing server-side Bot API token; never expose it. |
+| `TG_Chat_ID` binding/secret | document journal and Phase 4 object byte/event transport | Chat/channel where the bot can append documents. |
 | `BASIC_USER` and `BASIC_PASS` secrets | dashboard and `/api/projects/*` | Both are required for project/key management. They remain distinct from developer keys. |
 | `SESSION_SECRET` secret | dashboard HMAC session | Recommended existing dashboard-session signing secret. |
 
@@ -153,8 +153,10 @@ curl -u "$BASIC_USER:$BASIC_PASS" \
 | --- | --- |
 | `db:read` | `GET /api/db/:collection` and `GET /api/db/:collection/:id` |
 | `db:write` | `POST`, `PATCH`, and `DELETE` database mutations |
+| `storage:read` | `GET` and `HEAD /api/storage/:bucket/:key` in the key-derived project |
+| `storage:write` | `PUT` and `DELETE /api/storage/:bucket/:key` in the key-derived project |
 
-The default scope set is both `db:read` and `db:write`. A key may have either or both. The successful `201` creation response is the **only** time the plaintext `api_key` is available:
+The default scope set remains both `db:read` and `db:write`; storage authority is opt-in. A key may have any least-privilege subset of the allowed scopes. The successful `201` creation response is the **only** time the plaintext `api_key` is available:
 
 ```json
 {

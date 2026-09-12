@@ -1,8 +1,8 @@
 import { CloudConfigurationError } from './errors.js';
 
 // These are service boundaries, not provider implementations. Phase 2 supplies
-// a document adapter that satisfies the document contract; object storage stays
-// deferred. Both keep Telegram details out of HTTP handlers.
+// a document adapter and Phase 4 supplies a Telegram object adapter. Both keep
+// Telegram details out of HTTP handlers.
 export const DOCUMENT_DATABASE_METHODS = Object.freeze([
   'createDocument',
   'getDocument',

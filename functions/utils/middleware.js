@@ -69,15 +69,22 @@ export function redactTelemetryHeaders(headers) {
  * Drops request queries/fragments and masks Bot API path tokens before data is
  * sent to telemetry. A query might contain a future API key or a legacy token.
  */
+function redactObjectStoragePath(value) {
+  // Object keys are application-controlled names and can accidentally contain
+  // customer identifiers or opaque data. Keep the route/bucket diagnostic but
+  // never send the complete Phase 4 key to telemetry.
+  return String(value).replace(/(\/api\/storage\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]');
+}
+
 export function sanitizeTelemetryUrl(value) {
   if (typeof value !== 'string' || !value) return '';
   try {
     const url = new URL(value);
     // Redact after recombining origin + path: Telegram tokens live in the path
     // (`/bot<token>`), while the URL parser intentionally separates the host.
-    return redactSensitiveText(`${url.origin}${url.pathname}`);
+    return redactObjectStoragePath(redactSensitiveText(`${url.origin}${url.pathname}`));
   } catch (_) {
-    return redactSensitiveText(value.split(/[?#]/, 1)[0]);
+    return redactObjectStoragePath(redactSensitiveText(value.split(/[?#]/, 1)[0]));
   }
 }
 
@@ -107,10 +114,10 @@ export function buildSafeRequestTelemetry(request) {
   let hostname = '';
   try {
     const url = new URL(rawUrl);
-    path = redactSensitiveText(url.pathname);
+    path = redactObjectStoragePath(redactSensitiveText(url.pathname));
     hostname = url.hostname;
   } catch (_) {
-    path = redactSensitiveText(String(rawUrl).split(/[?#]/, 1)[0]);
+    path = redactObjectStoragePath(redactSensitiveText(String(rawUrl).split(/[?#]/, 1)[0]));
   }
 
   return {

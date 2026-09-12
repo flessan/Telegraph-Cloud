@@ -42,6 +42,10 @@ describe('telemetry security boundaries', function () {
       'https://api.telegram.org/file/bot[redacted]/documents/file.json',
     );
     assert.strictEqual(
+      middleware.sanitizeTelemetryUrl('https://example.com/api/storage/assets/customer-secret/report.json?ignored=yes'),
+      'https://example.com/api/storage/assets/[object-key]',
+    );
+    assert.strictEqual(
       middleware.redactSensitiveText(`request failed at https://api.telegram.org/bot${secret}/sendDocument?api_key=${secret}`),
       'request failed at https://api.telegram.org/bot[redacted]/sendDocument?api_key=[redacted]',
     );
