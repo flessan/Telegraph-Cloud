@@ -2,6 +2,8 @@
 
 Phase 2 adds the first real Telegraph Cloud capability: a bounded document database with Pages REST routes. It is additive. Existing uploads, `/file/*`, legacy Telegram/R2 providers, dashboard media management, albums, short links, and authentication behavior remain unchanged.
 
+> **Current access note:** Phase 3 now adds project-scoped developer Bearer keys while retaining the Phase 2 dashboard/session/Basic path as a separate unscoped legacy compatibility mode. This document remains the record/data-model reference; see [Phase 3: Projects and Developer API Keys](telegraph-cloud-phase-3-projects-and-developer-api-keys.md) for current authentication, isolation, key lifecycle, and migration behavior.
+>
 > **Status:** experimental/self-hosted document API. This is a Telegram-backed document database, not PostgreSQL, not a SQL-compatible service, and not an ACID or strongly transactional system.
 
 ## Scope
@@ -16,11 +18,10 @@ Implemented:
 - immutable Telegram revision events;
 - a separate `TELEGRAPH_CLOUD_KV` materialized record/collection/equality-index/outbox layer;
 - tombstones, ETag/version preconditions, bounded idempotency, and retry-based index recovery;
-- dashboard-session/Basic-auth protection for this interim owner-only API.
+- the original dashboard-session/Basic-auth legacy compatibility mode; Phase 3 additionally layers project-derived developer Bearer authorization in front of a separate scoped namespace.
 
 Explicitly not implemented:
 
-- projects, multi-project isolation, or developer API keys;
 - generic object storage, S3 compatibility, or `/storage/*`;
 - dashboard database panels, an API playground, billing, or usage UI;
 - SQL, joins, arbitrary expressions, relational constraints, transactions, or a promise of unlimited throughput/storage.
@@ -34,12 +35,13 @@ The database needs all of the following Pages bindings/secrets:
 | `TG_Bot_Token` secret | Sends immutable revision documents to the Telegram Bot API. |
 | `TG_Chat_ID` secret/binding | Telegram channel or chat that receives those documents. The bot must be allowed to send documents there. |
 | `TELEGRAPH_CLOUD_KV` KV binding | **Separate from** legacy `img_url`; stores the non-authoritative materialized index and mutation outbox. |
-| `BASIC_USER` and `BASIC_PASS` secrets | Required in Phase 2. The API fails closed without both values. |
+| `BASIC_USER` and `BASIC_PASS` secrets | Required for dashboard/session/Basic legacy database access and for Phase 3 dashboard-only project/key management. |
 | `SESSION_SECRET` secret | Recommended for the existing dashboard session mechanism. |
+| `API_KEY_PEPPER` secret | Required for Phase 3 developer key creation/verification; unique random secret of at least 32 bytes, never browser/Telegram/document data. |
 
-The new routes reuse the existing dashboard HMAC session cookie and its deliberate Basic-auth fallback. They never use `img_url`, do not enable CORS, and do not accept an API key yet. A request without a valid existing dashboard session/Basic identity receives `401 {"error":"unauthenticated"}`. A deployment that does not configure both `BASIC_USER` and `BASIC_PASS` receives `503 {"error":"database_auth_not_configured"}` rather than exposing the database publicly.
+The routes never use `img_url` or enable CORS. Phase 3 has two explicit database modes: a verified `Authorization: Bearer tg_live_…` key derives a project-scoped namespace, while the existing dashboard HMAC session/Basic fallback continues to access only unscoped legacy records. A dashboard request without a valid existing session/Basic identity receives `401 {"error":"unauthenticated"}`. The legacy mode still returns `503 {"error":"database_auth_not_configured"}` when both dashboard credentials are not configured. A malformed Bearer attempt does not fall through to dashboard auth; it receives the Phase 3 safe key failure response.
 
-For a script, use the current temporary Phase 2 auth form:
+For a legacy-export/dashboard script, use the retained Phase 2 compatibility form:
 
 ```bash
 curl -u "$BASIC_USER:$BASIC_PASS" \
@@ -49,7 +51,7 @@ curl -u "$BASIC_USER:$BASIC_PASS" \
   https://your-domain.example/api/db/users
 ```
 
-Phase 3 will replace this owner-only boundary with project-derived developer API keys. It must not be treated as a final public application-auth scheme. Phase 2 also applies a best-effort **20 mutation requests per authenticated identity per minute per running Function isolate** and returns `429 {"error":"rate_limited"}` with `Retry-After` when that local guard is full. It protects against accidental bursts before Telegram's own limits, but it is not a distributed quota or a substitute for future per-project abuse controls.
+For new project-scoped developer access, use only `Authorization: Bearer tg_live_…` after creating the project/key through dashboard-authenticated `/api/projects/*`; the Phase 3 reference documents that flow. The database applies a best-effort **20 mutation requests per authenticated project (developer mode) or dashboard identity (legacy mode) per minute per running Function isolate** and returns `429 {"error":"rate_limited"}` with `Retry-After` when that local guard is full. It protects against accidental bursts before Telegram's own limits, but it is not distributed rate limiting, durable usage analytics, or a substitute for edge abuse controls.
 
 ## Record model and public responses
 
@@ -211,7 +213,7 @@ For each create/update/delete, the service builds a complete revision snapshot s
 }
 ```
 
-It uploads this as a fixed-name Telegram JSON document through the Phase 1 append-only journal adapter. There is no Telegram message editing operation.
+It uploads this as a fixed-name Telegram JSON document through the Phase 1 append-only journal adapter. There is no Telegram message editing operation. In Phase 3 developer mode, the same revision additionally has a validated non-secret `"project_id":"prj_…"` field; legacy Phase 2 revisions remain unchanged and unscoped.
 
 `TELEGRAPH_CLOUD_KV` then stores derived, non-authoritative state under the separate `tc:v1` prefix:
 
@@ -223,7 +225,7 @@ It uploads this as a fixed-name Telegram JSON document through the Phase 1 appen
 | `db-filter` | Bounded top-level string equality lookup entries. |
 | `db-outbox` | Mutation intent, journal pointer, applied result, or conflict state. |
 
-Normal `GET` and list operations read this materialized index rather than scan Telegram history. KV is **not** represented as the source of truth: the canonical immutable revision is in Telegram, and KV only points to/materializes it. Telegram IDs stay inside these internal records and never cross the HTTP response boundary. There is deliberately no project segment in the Phase 2 keys because projects do not exist yet; Phase 3 must introduce a server-derived project scope rather than accepting an untrusted project selector from this API.
+Normal `GET` and list operations read this materialized index rather than scan Telegram history. KV is **not** represented as the source of truth for document revisions: the canonical immutable revision is in Telegram, and KV only points to/materializes it. Telegram IDs stay inside these internal records and never cross the HTTP response boundary. In retained dashboard legacy mode these Phase 2 keys remain unscoped. In Phase 3 developer mode, each namespace above has the authenticated opaque project ID as its first segment (for example `tc:v1:db-record:prj_…:users:rec_…`), and the immutable revision/current/index/outbox metadata carries the same non-secret `project_id`. No client project selector is accepted as authority.
 
 ## Mutation sequence, retries, and recovery
 
@@ -284,8 +286,8 @@ The full repository suite remains the compatibility gate:
 npm test
 ```
 
-Latest Phase 2 verification: **360 passing** (approximately 36 seconds). The suite includes legacy upload/file/dashboard/auth coverage as well as the new database regression cases.
+Phase 3 extends this coverage with project/key/auth/isolation/telemetry/backward-compatibility cases. Run the current repository suite rather than relying on the historical Phase 2 count.
 
-## Recommended next phase
+## Current follow-on
 
-Proceed to **Phase 3: projects and developer API keys** only after reviewing the owner-only database boundary. It should introduce project-derived authorization, securely generated one-time API-key secrets, hash-only storage with `API_KEY_PEPPER`, scopes, revoke/rotation, and project-bound database access—without changing the journal/index model or exposing Telegram internals.
+Phase 3 now provides project-derived authorization, one-time `tg_live_…` developer keys stored as keyed-HMAC metadata, scopes, revoke/rotation, and project-bound database access without changing the append-only journal/index model or exposing Telegram internals. See the [Phase 3 reference](telegraph-cloud-phase-3-projects-and-developer-api-keys.md). The recommended next scope is a deliberately designed Phase 4 object-storage adapter, not an unbounded expansion of this document API.

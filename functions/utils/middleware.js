@@ -13,6 +13,9 @@ const SAFE_REQUEST_HEADERS = new Set([
 const SENSITIVE_HEADER_NAME = /(authorization|cookie|api[-_]?key|token|secret|password|credential|signature|session|csrf)/i;
 const TELEGRAM_BOT_PATH = /(https?:\/\/api\.telegram\.org\/(?:file\/)?bot)[^/?\s]+/gi;
 const SENSITIVE_QUERY_VALUE = /([?&](?:api[-_]?key|token|secret|password|credential|signature|session)=)[^&#\s]*/gi;
+// Developer keys are Bearer-only, but scrub an accidentally interpolated key
+// from telemetry messages/breadcrumbs as a defense in depth as well.
+const DEVELOPER_API_KEY = /\btg_live_[A-Za-z0-9_-]+\b/g;
 const SAFE_CF_FIELDS = ['asn', 'colo', 'country', 'httpProtocol', 'tlsCipher', 'tlsVersion'];
 const SENTRY_DSN = 'https://219f636ac7bde5edab2c3e16885cb535@o4507041519108096.ingest.us.sentry.io/4507541492727808';
 
@@ -82,7 +85,8 @@ export function redactSensitiveText(value) {
   if (typeof value !== 'string') return value;
   return value
     .replace(TELEGRAM_BOT_PATH, '$1[redacted]')
-    .replace(SENSITIVE_QUERY_VALUE, '$1[redacted]');
+    .replace(SENSITIVE_QUERY_VALUE, '$1[redacted]')
+    .replace(DEVELOPER_API_KEY, 'tg_live_[redacted]');
 }
 
 function safeCfContext(cf) {

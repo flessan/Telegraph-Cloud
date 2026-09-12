@@ -1,5 +1,6 @@
 import { createTelegramDocumentDatabase, resolveDocumentDatabaseLimits } from './document-database.js';
 import { CloudRequestError, CloudValidationError } from './errors.js';
+import { assertProjectId } from './validation.js';
 import { jsonResponse } from '../utils/http.js';
 
 const encoder = new TextEncoder();
@@ -171,10 +172,27 @@ export function assertDeleteBody(body) {
   }
 }
 
-// `context.data` is internal Pages middleware state, never client input. This
-// optional seam makes route behavior testable with a mocked journal while real
-// deployments always construct the Telegram-backed provider from bindings.
+// `context.data` is internal Pages middleware state, never client input. The
+// DB middleware writes `databaseAuthentication` only after a dashboard session
+// or a verified Bearer developer key. A developer provider receives its project
+// solely from that authenticated context; request paths and query parameters do
+// not participate in project selection.
+//
+// The optional prebuilt-provider seam keeps legacy route behavior testable with
+// a mocked journal. It is deliberately ignored for developer authentication;
+// production developer requests construct the Telegram-backed provider from
+// bindings after the authentication middleware has selected the scope.
 export function documentDatabaseForContext(context) {
+  const authentication = context?.data?.databaseAuthentication;
+  // Never allow an incidental legacy/test provider stored in generic context
+  // data to override an authenticated developer project scope. Validate even
+  // this trusted middleware value so a malformed internal state fails closed
+  // instead of accidentally falling back to the unscoped legacy provider.
+  if (authentication?.authentication === 'developer_api_key') {
+    return createTelegramDocumentDatabase(context.env, {
+      projectId: assertProjectId(authentication.project_id),
+    });
+  }
   if (context?.data?.documentDatabase) return context.data.documentDatabase;
   return createTelegramDocumentDatabase(context.env);
 }

@@ -29,6 +29,13 @@ export class CloudValidationError extends TelegraphCloudError {
   }
 }
 
+export class CloudUnauthorizedError extends TelegraphCloudError {
+  constructor(code = 'invalid_api_key', message = 'A valid developer API key is required.') {
+    super(code, message, { status: 401 });
+    this.name = 'CloudUnauthorizedError';
+  }
+}
+
 export class CloudRequestError extends TelegraphCloudError {
   constructor(code, message, { status = 400, details } = {}) {
     super(code, message, { status, details });
@@ -47,6 +54,13 @@ export class CloudConflictError extends TelegraphCloudError {
   constructor(code, message, { details } = {}) {
     super(code, message, { status: 409, details });
     this.name = 'CloudConflictError';
+  }
+}
+
+export class CloudForbiddenError extends TelegraphCloudError {
+  constructor(code = 'forbidden', message = 'The authenticated credential cannot perform this operation.') {
+    super(code, message, { status: 403 });
+    this.name = 'CloudForbiddenError';
   }
 }
 

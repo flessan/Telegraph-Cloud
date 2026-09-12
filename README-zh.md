@@ -16,7 +16,8 @@
 - [功能特性](#功能特性)
 - [可选功能开启指南](#可选功能开启指南)：后台管理 / 上传保护 / 短链接 / 图片审查 / 防盗链 / R2 存储 / 站点自定义 / 白名单模式 / 自定义域名
 - [API 上传](#api-上传)
-- [Telegraph Cloud 文档数据库（Phase 2）](#telegraph-cloud-文档数据库phase-2)
+- [Telegraph Cloud 文档数据库（Phase 2–3）](#telegraph-cloud-文档数据库phase-23)
+- [Telegraph Cloud 项目与开发者 API Key（Phase 3）](#telegraph-cloud-项目与开发者-api-keyphase-3)
 - [使用限制与免费额度](#使用限制与免费额度)
 - [已经部署了的，如何更新？](#已经部署了的如何更新)
 - [常见问题](#常见问题)
@@ -78,7 +79,7 @@
 | `BASIC_USER`    | `admin`                   | 后台管理页面（/admin）的登录用户名。不设置则后台无需登录。 |
 | `BASIC_PASS`    | `admin-password`          | 后台管理页面的登录密码，需要和 `BASIC_USER` 同时设置。 |
 | `SESSION_SECRET` | `long-random-string` | 可选但推荐。用于签名后台登录会话 Cookie 的密钥；未设置时会从 `BASIC_USER`/`BASIC_PASS` 稳定推导，以保证已有部署无需新增配置仍可使用。生产环境建议设置独立的随机值。 |
-| `API_KEY_PEPPER` | `long-random-secret` | 为后续 Telegraph Cloud 开发者 API Key 预留的密钥。只能作为 Cloudflare Secret 保存；当前旧版上传/后台不会使用它，绝不能发送到浏览器。 |
+| `API_KEY_PEPPER` | `openssl rand -base64 48` | Phase 3 创建/验证 `tg_live_…` 开发者 API Key 所必需的密钥。每个环境使用至少 32 字节的独立随机 Cloudflare Secret；不是后台密码，绝不能发送到浏览器、Telegram 或文档记录。替换它会使已有开发者 Key 失效。 |
 | `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | 可选的 Phase 2 数据库 JSON 文档字节上限（1,024–98,304，默认 98,304），为 Telegram 日志版本元数据预留空间。 |
 | `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | 可选的 Phase 2 collection 名称上限（1–64 UTF-8 字节）。 |
 | `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | 可选的 Phase 2 记录 ID 上限（26–128 UTF-8 字节）；ID 由服务端生成。 |
@@ -106,17 +107,17 @@
 | 类型 | 变量名称 | 说明 |
 | ----------- | ----------- | ----------- |
 | KV 命名空间 | `img_url` | 绑定一个提前创建好的 KV 命名空间，即可开启后台图片管理；短链接功能也依赖此绑定 |
-| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | Phase 2 文档数据库使用的独立、非权威物化索引与变更恢复 outbox。请绑定**独立**命名空间；它不会替代或读取旧版 `img_url`。 |
+| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | Phase 3 项目/API Key 控制平面，以及 Phase 2/3 文档物化索引/outbox 共用的独立命名空间。请绑定**独立**命名空间；它不会替代或读取旧版 `img_url`。 |
 | R2 存储桶 | `img_r2` | 绑定一个提前创建好的 R2 存储桶，配合 `STORAGE_PROVIDER=r2` 使用 |
 | Workers AI | `AI` | 绑定 Workers AI 即可启用内置图片审查 |
 
-### Telegraph Cloud 基础设施与文档数据库（Phase 1–2）
+### Telegraph Cloud 基础设施、文档数据库与项目（Phase 1–3）
 
-`TELEGRAPH_CLOUD_KV` 与旧版 `img_url` 命名空间刻意分离。它现在保存 Phase 2 文档数据库的**非权威**物化记录/collection/筛选索引和变更恢复 outbox；Telegram 仍是不可变 JSON 文档版本的权威持久化层。不要用 `img_url` 替代它；绑定该命名空间不会改动已有上传、`/file/*` 链接、R2 行为或后台媒体记录。
+`TELEGRAPH_CLOUD_KV` 与旧版 `img_url` 命名空间刻意分离。它现在同时保存 Phase 3 项目/API Key 的**控制平面**（项目注册表、仅 HMAC 的 Key 元数据、撤销和列表状态）及 Phase 2/3 文档数据库可修复的物化记录/collection/筛选/修订/outbox 状态。Telegram 只保存不可变文档修订；API Key 明文和控制平面密钥绝不会写入 Telegram。不要用 `img_url` 替代它；绑定该命名空间不会改动已有上传、`/file/*` 链接、R2 行为或后台媒体记录。
 
-最初的 `/api/db/*` 文档接口仅供部署所有者使用：必须配置现有的 `BASIC_USER` 和 `BASIC_PASS`，并复用已有后台 HMAC 会话或 Basic Auth 兼容方式。未配置这两个凭据时接口会安全地拒绝请求。它不是开发者 API Key 接口，也不会提前启用项目、S3/对象存储路由或暴露 Telegram 标识。请阅读下方的 [Telegraph Cloud 文档数据库（Phase 2）](#telegraph-cloud-文档数据库phase-2) 和详细的英文 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+`/api/projects/*` 仅限后台管理员：需要同时配置 `BASIC_USER` 和 `BASIC_PASS`，并使用已有后台 HMAC 会话或 Basic Auth。它创建不透明项目和只显示一次的 `tg_live_…` 开发者 Key；开发者 Key 不是后台凭据。`/api/db/*` 有两个明确模式：验证通过的 `Authorization: Bearer tg_live_…` 请求只访问该 Key 派生的项目；已有后台会话/Basic 请求仍访问独立的未分项目旧数据命名空间。签发开发者 Key 前，请为每个环境设置强随机的 `API_KEY_PEPPER` Cloudflare Secret；两种模式都不会启用 S3/对象路由或暴露 Telegram 标识。
 
-Phase 3 上线开发者 API Key 时，请在 Production 与需要的 Preview 环境中将 `API_KEY_PEPPER` 配置为 Cloudflare Secret。不要把它放入客户端代码、静态文件或自定义环境变量管理界面。
+请阅读下方的 [Telegraph Cloud 文档数据库（Phase 2–3）](#telegraph-cloud-文档数据库phase-23)、详细英文 [Phase 3 项目与 Key 参考](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md)，以及 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
 
 ## 功能特性
 
@@ -305,11 +306,11 @@ curl -u uploader:strong-password -F "file=@/path/to/image.png" https://your.doma
 > [!NOTE]
 > 使用 Telegram 存储（默认）时，上传受 Telegram Bot API 速率限制约束：**每个频道约 20 条消息/分钟**。批量上传超过该速率时会开始收到 Telegram 报错——请控制批量上传的节奏，或改用没有此限制的 [R2 存储](#r2-存储)。
 
-## Telegraph Cloud 文档数据库（Phase 2）
+## Telegraph Cloud 文档数据库（Phase 2–3）
 
-Phase 2 在旧版图床接口旁新增实验性的、自托管文档数据库 API。它是**以 Telegram 为后端的文档数据库**，不是 PostgreSQL，不兼容 SQL，也不是 ACID 或强事务系统。每次创建、更新、删除都会向 Telegram 追加一个完整且不可变的 JSON 修订；独立的 `TELEGRAPH_CLOUD_KV` 仅保存可修复的当前记录、collection、等值筛选、修订指针和变更 outbox 物化索引。
+实验性的、自托管 `/api/db/*` 是**以 Telegram 为后端的文档数据库**，不是 PostgreSQL、不兼容 SQL、不是关系/ACID 存储，也不是秘密管理器或无限性能服务。每次创建、更新、删除都会向 Telegram 追加完整且不可变的 JSON 修订；`TELEGRAPH_CLOUD_KV` 保存可修复的文档物化/outbox，并保存 Phase 3 项目和仅 HMAC 的 Key 控制平面。
 
-使用前请分别绑定 `TELEGRAPH_CLOUD_KV`（不能与 `img_url` 混用），并配置 `TG_Bot_Token`、`TG_Chat_ID`、`BASIC_USER` 和 `BASIC_PASS`。与旧后台保留的开放模式兼容行为不同，数据库路由在没有这两个凭据时会安全地拒绝访问。本阶段临时复用已有后台会话或 Basic Auth；项目和开发者 API Key 刻意留到后续阶段。
+请分别绑定 `TELEGRAPH_CLOUD_KV`（不能与 `img_url` 混用）并配置 `TG_Bot_Token`、`TG_Chat_ID`。如需项目隔离的开发者访问，请先通过后台认证的 `/api/projects/*` 创建项目/Key，将强随机 `API_KEY_PEPPER` 设置为 Cloudflare Secret，并只用 `Authorization: Bearer tg_live_…` 发送签发后仅显示一次的 Key。服务端只从验证后的 Key 派生项目，客户端项目 ID 不会授权访问。已有后台会话/Basic 访问仍是独立的、未分项目的旧数据兼容模式，且仍需要同时配置 `BASIC_USER` / `BASIC_PASS`。
 
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
@@ -322,6 +323,24 @@ Phase 2 在旧版图床接口旁新增实验性的、自托管文档数据库 AP
 每个变更请求都强烈建议带上 `Idempotency-Key`。在七天的回执保留期内，使用同一个 key 重试同一个请求会返回原有逻辑结果；把同一个 key 用于不同请求会产生冲突。若 Telegram 追加成功但 KV 索引写入失败，接口会返回 `503 {"error":"mutation_pending"}`，不会虚报成功；在 KV 恢复后用同一 key 重试完全相同的请求。
 
 记录响应含有 `data`、`version`、`created_at`、`updated_at`，并通过 `ETag` 返回带引号的版本。Telegram 的 `file_id` / 消息标识、日志事件标识和内部索引指针绝不会出现在 API 响应里。它不是秘密管理器：记录 JSON 会同时物化在 KV 并以不可变形式写入 Telegram，因此不要存放 bot token、API Key secret、密码或其他凭据。文档、collection 名称、ID、查询页、筛选、cursor 与幂等 key 都有上限；可配置的环境变量列在上方。完整的 API 示例、返回结构、变更顺序、并发限制、tombstone、查询限制与恢复行为请参阅英文 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+
+## Telegraph Cloud 项目与开发者 API Key（Phase 3）
+
+Phase 3 增加不透明的 `prj_…` 项目边界与安全生成的 `tg_live_…` 开发者凭据，不改变旧图床或 `/file/*`。项目/Key 管理刻意只开放给后台管理员：
+
+| 方法 | 路由 | 用途 |
+| --- | --- | --- |
+| `POST`、`GET` | `/api/projects` | 创建/列出项目。 |
+| `GET`、`PATCH`、`DELETE` | `/api/projects/:id` | 查询、修改、停用或逻辑删除项目。 |
+| `POST`、`GET` | `/api/projects/:id/keys` | 创建（明文只显示一次）或列出安全 Key 元数据。 |
+| `DELETE` | `/api/projects/:id/keys/:keyId` | 撤销开发者 Key。 |
+| `POST` | `/api/projects/:id/keys/:keyId/rotate` | 创建只显示一次的替换 Key 并撤销旧 Key。 |
+
+这些路由需要已有后台 HMAC 会话或 Basic 凭据；未同时配置 `BASIC_USER` 与 `BASIC_PASS` 时会安全拒绝。开发者 Key 不能访问它们。开发者 Key 只有 `db:read` / `db:write` scope，且只能通过 `Authorization: Bearer tg_live_…` 发送；创建/轮换响应后不再显示明文，也不会写入 Telegram 或 KV 元数据。
+
+有效 Key 在处理 `/api/db/*` 前只在服务端派生一个项目。同名 collection 和记录 ID 通过项目化 KV 与不可变修订元数据隔离。缺失/无效/已撤销 Key 返回 `401`；有效但 scope 不足或项目不活跃返回 `403`；调用者项目内没有的记录返回 `404`，不会泄露其他项目。后台 Basic/会话请求保留旧的未分项目 Phase 2 命名空间，以便兼容和迁移；已有数据不会被静默分配到某个项目。
+
+签发 Key 前请阅读详细英文 [Phase 3 项目、凭据、隔离、一致性和迁移参考](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md)。其中包括旧 Phase 2 记录的手动导出/重建路径、KV 传播/撤销限制、仅本 isolate 的变更保护，以及仍明确不在范围内的功能。
 
 ## 使用限制与免费额度
 
@@ -396,6 +415,12 @@ npm run test:e2e   # 终端 2
 Hostloc @feixiang 和@乌拉擦 提供的思路和代码
 
 ## 更新日志
+2026 年 9 月 12 日--Telegraph Cloud Phase 3 项目与开发者 API Key
+
+- 新增只限后台管理员的项目/Key 控制平面 API，全部使用独立 `TELEGRAPH_CLOUD_KV`：不透明项目 ID、安全生命周期元数据、密码学随机且只显示一次的 `tg_live_…` Key、带密钥 HMAC 验证、撤销与轮换。
+- 新增 Bearer Key 到项目的数据库授权、`db:read`/`db:write` scope、项目前缀的文档 KV/索引/outbox Key，以及不可变 Telegram 修订中的非秘密项目元数据。已有后台会话/Basic 数据库访问继续使用独立的未分项目旧命名空间；不会静默迁移任何数据。
+- 新增安全的 401/403/项目可见 404 边界、开发者 Key 遥测防御性脱敏，并记录 KV/撤销与本地速率保护限制；旧上传、`/file/*`、后台、Telegram/R2 和公开链接均保持不变。对象/S3 路由、计费、分析、SDK 和 SQL 仍不在范围内。
+
 2026 年 9 月 12 日--Telegraph Cloud Phase 2 文档数据库
 
 - 新增仅限部署所有者使用、以 Telegram 为后端的 `/api/db/*` CRUD：不可变 JSON 修订、服务端记录 ID、当前版本/ETag、tombstone、受限 cursor/等值筛选读取、乐观并发控制和 Idempotency-Key 重试。

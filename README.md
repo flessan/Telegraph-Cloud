@@ -16,7 +16,8 @@ English|[中文](README-zh.md)
 - [Features](#features)
 - [Optional Features Guide](#optional-features-guide): dashboard / upload protection / short links / image review / anti-hotlinking / R2 storage / site customization / whitelist mode / custom domain
 - [Upload API](#upload-api)
-- [Telegraph Cloud Document Database (Phase 2)](#telegraph-cloud-document-database-phase-2)
+- [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23)
+- [Telegraph Cloud Projects and Developer API Keys (Phase 3)](#telegraph-cloud-projects-and-developer-api-keys-phase-3)
 - [Limitations and Free Quotas](#limitations-and-free-quotas)
 - [How to Update if Already Deployed?](#how-to-update-if-already-deployed)
 - [FAQ](#faq)
@@ -78,7 +79,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `BASIC_USER`        | `admin`                   | Login username for the dashboard (/admin). Leave unset for a dashboard without login. |
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
-| `API_KEY_PEPPER`    | `long-random-secret`      | Reserved for Telegraph Cloud developer API keys in a later phase. Store it only as a Cloudflare secret; it is not used by the legacy upload/dashboard and must never be sent to a browser. |
+| `API_KEY_PEPPER`    | `openssl rand -base64 48` | Required to create or verify Phase 3 `tg_live_…` developer keys. Use a unique random Cloudflare **Secret** of at least 32 bytes per environment. It is not a dashboard password and must never be sent to a browser, Telegram, or document record. Replacing it invalidates existing developer keys. |
 | `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | Optional Phase 2 database JSON-document limit in bytes (1,024–98,304; default 98,304). Kept below the Telegram journal cap for revision metadata. |
 | `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | Optional Phase 2 collection-name limit (1–64 UTF-8 bytes). |
 | `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | Optional Phase 2 record-ID limit (26–128 UTF-8 bytes). IDs are server-generated. |
@@ -106,17 +107,17 @@ Bindings (`Settings` -> `Functions`):
 | Type | Variable Name | Description |
 | ----------- | ----------- | ----------- |
 | KV namespace | `img_url` | Bind a pre-created KV namespace to enable the image management dashboard; the short links feature also requires this binding |
-| KV namespace | `TELEGRAPH_CLOUD_KV` | Dedicated, non-authoritative Telegraph Cloud materialized index and mutation-recovery outbox for the Phase 2 document database. Bind a **separate** namespace; it does not replace or read legacy `img_url`. |
+| KV namespace | `TELEGRAPH_CLOUD_KV` | Dedicated Telegraph Cloud namespace for Phase 3 project/key control-plane records and Phase 2/3 document materialized indexes/outboxes. Bind a **separate** namespace; it does not replace or read legacy `img_url`. |
 | R2 bucket | `img_r2` | Bind a pre-created R2 bucket to enable `STORAGE_PROVIDER=r2` |
 | Workers AI | `AI` | Bind Workers AI to enable the built-in image review provider |
 
-### Telegraph Cloud foundations and database (Phases 1–2)
+### Telegraph Cloud foundations, database, and projects (Phases 1–3)
 
-`TELEGRAPH_CLOUD_KV` is intentionally separate from the legacy `img_url` namespace. It now holds the Phase 2 document database's **non-authoritative** materialized record/collection/filter index and mutation-recovery outbox. Telegram remains the canonical persistence substrate for immutable JSON document revisions. Do not bind `img_url` in its place, and do not expect this binding to alter existing uploads, `/file/*` links, R2 behavior, or dashboard media records.
+`TELEGRAPH_CLOUD_KV` is intentionally separate from legacy `img_url`. It now contains Phase 3 project/key **control-plane** records (project registry, HMAC-only key metadata and revocation/listing state) plus the Phase 2/3 document database's repairable materialized record/collection/filter/revision/outbox state. Telegram remains canonical only for immutable document revisions; API-key plaintext and control-plane secrets never go to Telegram. Do not bind `img_url` in its place, and do not expect this binding to alter existing uploads, `/file/*` links, R2 behavior, or dashboard media records.
 
-The initial `/api/db/*` document API is owner-only: it requires both existing `BASIC_USER` and `BASIC_PASS`, and accepts the established dashboard HMAC session or Basic Auth fallback. It fails closed if those credentials are not configured. It is not a developer API-key surface, does not enable projects or S3/object routes, and exposes no Telegram identifiers. See [Telegraph Cloud Document Database (Phase 2)](#telegraph-cloud-document-database-phase-2) and the detailed [Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+`/api/projects/*` is dashboard-administrator-only and requires both `BASIC_USER` and `BASIC_PASS` (existing HMAC dashboard session or Basic fallback). It creates opaque projects and one-time-reveal `tg_live_…` developer keys. Developer keys are not dashboard credentials. `/api/db/*` now has two explicit modes: a verified `Authorization: Bearer tg_live_…` request is scoped solely to that key's project; existing dashboard/session/Basic access remains a separate unscoped legacy compatibility mode. Configure a unique random `API_KEY_PEPPER` Cloudflare Secret before issuing developer keys. Neither mode enables S3/object routes or reveals Telegram identifiers.
 
-When developer API keys arrive in Phase 3, set `API_KEY_PEPPER` as a Cloudflare secret in both Production and Preview as appropriate. Do not put it in client code, a static file, or a custom environment-management UI.
+See [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23), the [Phase 3 projects/key reference](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md), and the [Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
 
 ## Features
 
@@ -308,11 +309,11 @@ The endpoint works with upload tools that support custom web image hosts, such a
 > [!NOTE]
 > When storing to Telegram (the default), uploads are subject to Telegram's Bot API rate limit of roughly **20 messages per minute per channel**. Batch uploads that exceed this rate will start failing with Telegram errors — space out large batches, or switch to [R2 storage](#r2-storage), which has no such limit.
 
-## Telegraph Cloud Document Database (Phase 2)
+## Telegraph Cloud Document Database (Phases 2–3)
 
-Phase 2 adds an experimental, self-hosted document API alongside the legacy image-host surface. It is a **Telegram-backed document database**, not PostgreSQL, SQL-compatible storage, or an ACID transaction system. Each create/update/delete appends a complete immutable JSON revision to Telegram; the dedicated `TELEGRAPH_CLOUD_KV` binding stores only the repairable current-record, collection, equality-filter, revision-pointer, and mutation-outbox materialized indexes.
+The experimental, self-hosted `/api/db/*` surface is a **Telegram-backed document database**, not PostgreSQL, SQL-compatible storage, relational/ACID storage, a secret manager, or an unlimited-performance service. Each create/update/delete appends a complete immutable JSON revision to Telegram; `TELEGRAPH_CLOUD_KV` stores the repairable document materialization/outbox while also holding the Phase 3 project and HMAC-only key control plane.
 
-Before using it, bind `TELEGRAPH_CLOUD_KV` separately from `img_url`, configure `TG_Bot_Token` / `TG_Chat_ID`, and configure both `BASIC_USER` / `BASIC_PASS`. Unlike the legacy dashboard's open-mode compatibility behavior, database routes fail closed without those credentials. Use the existing dashboard session or Basic Auth for this interim owner-only phase; projects and developer API keys are deliberately deferred.
+Bind `TELEGRAPH_CLOUD_KV` separately from `img_url` and configure `TG_Bot_Token` / `TG_Chat_ID`. For project-scoped developer access, create a dashboard-authenticated project/key under `/api/projects/*`, set `API_KEY_PEPPER` as a strong Cloudflare Secret, and send the resulting one-time-reveal key only as `Authorization: Bearer tg_live_…`. The server derives the project from the validated key; client project IDs do not authorize access. Existing dashboard session/Basic access remains a separate unscoped legacy mode and still requires both `BASIC_USER` / `BASIC_PASS`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -325,6 +326,24 @@ Before using it, bind `TELEGRAPH_CLOUD_KV` separately from `img_url`, configure 
 Use an `Idempotency-Key` header on every mutation. Within its seven-day receipt window, a same-key retry of the same request returns the original logical result; reuse with a different request returns a conflict. A successful Telegram append followed by an index failure returns `503 {"error":"mutation_pending"}` instead of claiming success—retry the exact request with the same key after KV recovers.
 
 Record responses include `data`, `version`, `created_at`, and `updated_at`, plus an `ETag` carrying the quoted version. Telegram `file_id` / message identifiers, journal event identifiers, and internal index pointers never appear in API responses. This is not a secret manager: record JSON is materialized in KV as well as canonically journaled in Telegram, so do not store bot tokens, API-key secrets, passwords, or credentials in it. Documents, collection names, IDs, query pages, filters, cursors, and idempotency keys are bounded; the configurable environment limits are listed above. The detailed API examples, response shapes, mutation sequence, concurrency limitations, tombstones, query restrictions, and recovery behavior are in [the Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+
+## Telegraph Cloud Projects and Developer API Keys (Phase 3)
+
+Phase 3 adds opaque `prj_…` project boundaries and securely generated `tg_live_…` developer credentials without changing legacy image hosting or `/file/*`. Project/key management is intentionally dashboard-only:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST`, `GET` | `/api/projects` | Create/list projects. |
+| `GET`, `PATCH`, `DELETE` | `/api/projects/:id` | Read, edit, disable, or logically delete a project. |
+| `POST`, `GET` | `/api/projects/:id/keys` | Create (one-time plaintext reveal) or list safe key metadata. |
+| `DELETE` | `/api/projects/:id/keys/:keyId` | Revoke a developer key. |
+| `POST` | `/api/projects/:id/keys/:keyId/rotate` | Create a one-time-reveal replacement and revoke the old key. |
+
+These routes require the existing dashboard HMAC session or Basic credentials, and fail closed if both `BASIC_USER` and `BASIC_PASS` are not configured. A developer key cannot access them. Developer keys receive only `db:read` and/or `db:write` scopes and must be sent only as `Authorization: Bearer tg_live_…`; plaintext is never shown again after create/rotate and is never stored in Telegram or KV metadata.
+
+A valid key derives a single project server-side before `/api/db/*` is handled. Same-named collections and record IDs are isolated by project-scoped KV and immutable revision metadata. Missing/invalid/revoked keys return `401`; a valid key with insufficient scope or an inactive project returns `403`; records unavailable in the caller's own project return `404` without cross-project disclosure. Dashboard Basic/session requests retain the old unscoped Phase 2 namespace for intentional compatibility and migration; no existing data is silently assigned to a project.
+
+Read the detailed [Phase 3 projects, credentials, isolation, consistency, and migration reference](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md) before issuing keys. It includes the manual export/recreate path for legacy Phase 2 records, KV propagation/revocation limits, local-only mutation guards, and the features deliberately still out of scope.
 
 ## Limitations and Free Quotas
 
@@ -399,6 +418,12 @@ The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Cont
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 12, 2026 - Telegraph Cloud Phase 3 Projects and Developer API Keys
+
+- Added dashboard-only project/key control-plane APIs backed only by the dedicated `TELEGRAPH_CLOUD_KV` namespace: opaque project IDs, safe lifecycle metadata, cryptographically generated one-time `tg_live_…` key reveal, keyed-HMAC verification, revoke, and rotation.
+- Added Bearer-key-to-project database authorization with `db:read`/`db:write` scopes, project-prefixed document KV/index/outbox keys, and non-secret project metadata in immutable Telegram revisions. Existing dashboard/session/Basic database access stays separate in the unscoped legacy namespace; no data is silently migrated.
+- Added safe 401/403/project-visible 404 boundaries, telemetry defense-in-depth for accidentally interpolated developer keys, documented KV/revocation and local-rate-guard limits, and retained all legacy upload, `/file/*`, dashboard, Telegram/R2, and public-link behavior. Object/S3 routes, billing, analytics, SDKs, and SQL remain out of scope.
+
 September 12, 2026 - Telegraph Cloud Phase 2 Document Database
 
 - Added the owner-only, Telegram-backed `/api/db/*` CRUD surface: immutable JSON revision documents, server-generated record IDs, current versions/ETags, tombstones, bounded cursor/equality-filter reads, optimistic concurrency, and idempotency-key retries.

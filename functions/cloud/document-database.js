@@ -13,6 +13,7 @@ import { createCloudPersistenceFoundation } from './foundation.js';
 import {
   CLOUD_LIMITS,
   assertCollectionName,
+  assertProjectId,
   assertDocumentId,
   assertDocumentQueryField,
   assertDocumentQueryValue,
@@ -23,9 +24,10 @@ import {
   utf8ByteLength,
 } from './validation.js';
 
-// This adapter deliberately has no project/API-key assumptions. Phase 2 is a
-// deployment-local, dashboard-owner-only database surface. Phase 3 will put
-// project-derived authorization in front of the same provider-neutral methods.
+// This provider accepts an optional trusted server-derived project scope. With
+// no scope it deliberately retains the Phase 2 dashboard-only legacy namespace;
+// with one, every data-plane KV key and immutable Telegram revision is isolated
+// under that opaque project identifier. It never trusts a client project ID.
 export const DOCUMENT_REVISION_SCHEMA = 'telegraph-cloud.record.v1';
 export const DOCUMENT_RECORD_INDEX_SCHEMA = 'telegraph-cloud.record-index.v1';
 export const DOCUMENT_REVISION_INDEX_SCHEMA = 'telegraph-cloud.revision-index.v1';
@@ -321,10 +323,27 @@ function normalizeJournalPointer(value) {
   }
 }
 
-function normalizeCurrentRecord(value) {
+function normalizeStoredProjectScope(value, expectedProjectId) {
+  const hasProjectId = own(value, 'project_id');
+  if (expectedProjectId === null) {
+    if (hasProjectId) throw new Error('unexpected project scope');
+    return null;
+  }
+  if (!hasProjectId || assertProjectId(value.project_id) !== expectedProjectId) {
+    throw new Error('invalid project scope');
+  }
+  return expectedProjectId;
+}
+
+function scopedProjectField(projectId) {
+  return projectId === null ? {} : { project_id: projectId };
+}
+
+function normalizeCurrentRecord(value, expectedProjectId = null) {
   if (value === null) return null;
   try {
     if (!plainObject(value) || value.schema !== DOCUMENT_RECORD_INDEX_SCHEMA) throw new Error('invalid record');
+    const projectId = normalizeStoredProjectScope(value, expectedProjectId);
     const collection = assertCollectionName(value.collection);
     const recordId = assertDocumentId(value.record_id);
     if (!Number.isSafeInteger(value.version) || value.version < 1) throw new Error('invalid version');
@@ -350,6 +369,7 @@ function normalizeCurrentRecord(value) {
     }
     return {
       schema: DOCUMENT_RECORD_INDEX_SCHEMA,
+      ...scopedProjectField(projectId),
       collection,
       record_id: recordId,
       version: value.version,
@@ -369,9 +389,10 @@ function normalizeCurrentRecord(value) {
   }
 }
 
-function normalizeRevisionIndex(value) {
+function normalizeRevisionIndex(value, expectedProjectId = null) {
   try {
     if (!plainObject(value) || value.schema !== DOCUMENT_REVISION_INDEX_SCHEMA) throw new Error('invalid revision index');
+    const projectId = normalizeStoredProjectScope(value, expectedProjectId);
     const collection = assertCollectionName(value.collection);
     const recordId = assertDocumentId(value.record_id);
     const eventId = assertDocumentId(value.event_id);
@@ -398,6 +419,7 @@ function normalizeRevisionIndex(value) {
     }
     return {
       schema: DOCUMENT_REVISION_INDEX_SCHEMA,
+      ...scopedProjectField(projectId),
       collection,
       record_id: recordId,
       version: value.version,
@@ -415,9 +437,10 @@ function normalizeRevisionIndex(value) {
   }
 }
 
-function normalizeRevision(value) {
+function normalizeRevision(value, expectedProjectId = null) {
   try {
     if (!plainObject(value) || value.schema !== DOCUMENT_REVISION_SCHEMA) throw new Error('invalid revision');
+    const projectId = normalizeStoredProjectScope(value, expectedProjectId);
     const collection = assertCollectionName(value.collection);
     const recordId = assertDocumentId(value.record_id);
     const eventId = assertDocumentId(value.event_id);
@@ -453,6 +476,7 @@ function normalizeRevision(value) {
     }
     return {
       schema: DOCUMENT_REVISION_SCHEMA,
+      ...scopedProjectField(projectId),
       event_id: eventId,
       collection,
       record_id: recordId,
@@ -470,10 +494,11 @@ function normalizeRevision(value) {
   }
 }
 
-function normalizeOutbox(value) {
+function normalizeOutbox(value, expectedProjectId = null) {
   if (value === null) return null;
   try {
     if (!plainObject(value) || value.schema !== DOCUMENT_OUTBOX_SCHEMA) throw new Error('invalid outbox');
+    const projectId = normalizeStoredProjectScope(value, expectedProjectId);
     const eventId = assertDocumentId(value.event_id);
     const collection = assertCollectionName(value.collection);
     const recordId = assertDocumentId(value.record_id);
@@ -486,7 +511,7 @@ function normalizeOutbox(value) {
       throw new Error('invalid idempotency digest');
     }
     if (!safeTimestamp(value.created_at) || !safeTimestamp(value.updated_at)) throw new Error('invalid timestamps');
-    const revision = normalizeRevision(value.revision);
+    const revision = normalizeRevision(value.revision, expectedProjectId);
     if (revision.event_id !== eventId || revision.collection !== collection || revision.record_id !== recordId) {
       throw new Error('outbox revision mismatch');
     }
@@ -500,6 +525,7 @@ function normalizeOutbox(value) {
     }
     return {
       schema: DOCUMENT_OUTBOX_SCHEMA,
+      ...scopedProjectField(projectId),
       event_id: eventId,
       collection,
       record_id: recordId,
@@ -572,6 +598,7 @@ function resultForRevision(revision) {
 function recordFromRevision(revision, journalPointer) {
   return {
     schema: DOCUMENT_RECORD_INDEX_SCHEMA,
+    ...scopedProjectField(own(revision, 'project_id') ? revision.project_id : null),
     collection: revision.collection,
     record_id: revision.record_id,
     version: revision.version,
@@ -590,6 +617,7 @@ function recordFromRevision(revision, journalPointer) {
 function revisionIndexFromRevision(revision, journalPointer) {
   return {
     schema: DOCUMENT_REVISION_INDEX_SCHEMA,
+    ...scopedProjectField(own(revision, 'project_id') ? revision.project_id : null),
     collection: revision.collection,
     record_id: revision.record_id,
     version: revision.version,
@@ -724,9 +752,14 @@ export function createTelegramDocumentDatabase(env, {
   foundation = null,
   index = null,
   journal = null,
+  // This option is internal server composition state. Route code may supply it
+  // only after Bearer-key authentication; no request parameter is ever mapped
+  // into it. `null` preserves the Phase 2 dashboard legacy namespace.
+  projectId = null,
   now = () => new Date(),
   createId = createRandomId,
 } = {}) {
+  const projectScope = projectId === null || projectId === undefined ? null : assertProjectId(projectId);
   const limits = resolveDocumentDatabaseLimits(env);
   const persistence = foundation || createCloudPersistenceFoundation(env, { index, journal });
   const cloudIndex = persistence?.index;
@@ -740,9 +773,13 @@ export function createTelegramDocumentDatabase(env, {
     throw new CloudConfigurationError('telegram_journal_unavailable', 'The Telegram journal is unavailable.');
   }
 
+  function scopedSegments(segments) {
+    return projectScope === null ? segments : [projectScope, ...segments];
+  }
+
   async function getIndex(namespace, ...segments) {
     try {
-      return await cloudIndex.getJson(namespace, ...segments);
+      return await cloudIndex.getJson(namespace, ...scopedSegments(segments));
     } catch (error) {
       throw indexFailure('read', error);
     }
@@ -750,7 +787,7 @@ export function createTelegramDocumentDatabase(env, {
 
   async function putIndex(namespace, segments, value, options = {}) {
     try {
-      await cloudIndex.putJson(namespace, segments, value, options);
+      await cloudIndex.putJson(namespace, scopedSegments(segments), value, options);
     } catch (error) {
       throw indexFailure('write', error);
     }
@@ -758,26 +795,29 @@ export function createTelegramDocumentDatabase(env, {
 
   async function removeIndex(namespace, ...segments) {
     try {
-      await cloudIndex.remove(namespace, ...segments);
+      await cloudIndex.remove(namespace, ...scopedSegments(segments));
     } catch (error) {
       throw indexFailure('delete', error);
     }
   }
 
-  async function listIndex(namespace, options) {
+  async function listIndex(namespace, options = {}) {
     try {
-      return await cloudIndex.list(namespace, options);
+      return await cloudIndex.list(namespace, {
+        ...options,
+        prefixSegments: scopedSegments(options.prefixSegments || []),
+      });
     } catch (error) {
       throw indexFailure('list', error);
     }
   }
 
   async function readCurrent(collection, recordId) {
-    return normalizeCurrentRecord(await getIndex(DOCUMENT_INDEX_NAMESPACES.record, collection, recordId));
+    return normalizeCurrentRecord(await getIndex(DOCUMENT_INDEX_NAMESPACES.record, collection, recordId), projectScope);
   }
 
   async function readOutbox(outboxId) {
-    return normalizeOutbox(await getIndex(DOCUMENT_INDEX_NAMESPACES.outbox, outboxId));
+    return normalizeOutbox(await getIndex(DOCUMENT_INDEX_NAMESPACES.outbox, outboxId), projectScope);
   }
 
   async function writeOutbox(outboxId, value, options) {
@@ -862,6 +902,7 @@ export function createTelegramDocumentDatabase(env, {
     const deleted = operation === 'delete';
     return {
       schema: DOCUMENT_REVISION_SCHEMA,
+      ...scopedProjectField(projectScope),
       event_id: eventId,
       collection,
       record_id: recordId,
@@ -886,7 +927,7 @@ export function createTelegramDocumentDatabase(env, {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const existingValue = await getIndex(DOCUMENT_INDEX_NAMESPACES.revision, ...segments);
       if (existingValue !== null) {
-        const existing = normalizeRevisionIndex(existingValue);
+        const existing = normalizeRevisionIndex(existingValue, projectScope);
         if (existing.collection !== revision.collection || existing.record_id !== revision.record_id
           || existing.version !== revision.version) {
           throw storedStateFailure();
@@ -912,7 +953,7 @@ export function createTelegramDocumentDatabase(env, {
       if (confirmedValue === null) {
         throw new CloudAdapterError('cloud_index_revision_unconfirmed', 'Cloud index revision state is unavailable.', { status: 503 });
       }
-      const confirmed = normalizeRevisionIndex(confirmedValue);
+      const confirmed = normalizeRevisionIndex(confirmedValue, projectScope);
       if (confirmed.collection !== revision.collection || confirmed.record_id !== revision.record_id
         || confirmed.version !== revision.version) {
         throw storedStateFailure();
@@ -1169,6 +1210,7 @@ export function createTelegramDocumentDatabase(env, {
     const timestamp = toIsoTimestamp(now);
     return {
       schema: DOCUMENT_OUTBOX_SCHEMA,
+      ...scopedProjectField(projectScope),
       event_id: eventId,
       collection,
       record_id: recordId,
@@ -1391,7 +1433,7 @@ export function createTelegramDocumentDatabase(env, {
         collection,
         recordId,
         version,
-      ));
+      ), projectScope);
       if (value.collection !== collection || value.record_id !== recordId || String(value.version) !== version) {
         throw storedStateFailure();
       }

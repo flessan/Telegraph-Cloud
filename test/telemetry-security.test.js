@@ -47,6 +47,18 @@ describe('telemetry security boundaries', function () {
     );
   });
 
+  it('redacts a full developer key if application text accidentally interpolates it', function () {
+    const secret = `tg_live_key_${'a'.repeat(22)}_${'b'.repeat(43)}`;
+    const safe = middleware.redactTelemetryEvent({
+      message: `developer request failed for ${secret}`,
+      exception: { values: [{ value: `Bearer ${secret}` }] },
+      breadcrumbs: [{ message: `retry ${secret}` }],
+    });
+    const serialized = JSON.stringify(safe);
+    assert.ok(!serialized.includes(secret), serialized);
+    assert.ok(serialized.includes('tg_live_[redacted]'), serialized);
+  });
+
   it('registers the same scrubber for Sentry error and transaction events', function () {
     const options = middleware.createTelemetryOptions(0.01);
     assert.strictEqual(options.beforeSend, middleware.redactTelemetryEvent);

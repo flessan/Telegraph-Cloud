@@ -5,6 +5,11 @@ import { CloudValidationError } from './errors.js';
 // contract in this phase.
 export const CLOUD_LIMITS = Object.freeze({
   MAX_PROJECT_ID_LENGTH: 64,
+  MAX_PROJECT_SLUG_LENGTH: 48,
+  MAX_PROJECT_NAME_BYTES: 120,
+  MAX_API_KEY_NAME_BYTES: 120,
+  MAX_API_KEY_ID_LENGTH: 64,
+  MAX_API_KEY_SCOPES: 4,
   MAX_COLLECTION_NAME_LENGTH: 64,
   MAX_DOCUMENT_ID_LENGTH: 128,
   MIN_BUCKET_NAME_LENGTH: 3,
@@ -38,6 +43,8 @@ export const CLOUD_LIMITS = Object.freeze({
 const encoder = new TextEncoder();
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 const PROJECT_ID_PATTERN = /^prj_[A-Za-z0-9_-]{8,48}$/;
+const PROJECT_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
+const API_KEY_ID_PATTERN = /^key_[A-Za-z0-9_-]{16,48}$/;
 const COLLECTION_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BUCKET_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$/;
@@ -106,6 +113,46 @@ export function assertProjectId(value) {
     invalid('invalid_project_id', 'Invalid project identifier.');
   }
   return projectId;
+}
+
+/**
+ * A project slug is human-readable control-plane metadata, not an authority
+ * token. Project-bound data keys always use the generated opaque project ID.
+ */
+export function assertProjectSlug(value) {
+  const slug = assertString(value, 'invalid_project_slug', 'Invalid project slug.', {
+    maxBytes: CLOUD_LIMITS.MAX_PROJECT_SLUG_LENGTH,
+  });
+  if (!PROJECT_SLUG_PATTERN.test(slug)) {
+    invalid('invalid_project_slug', 'Invalid project slug.');
+  }
+  return slug;
+}
+
+function assertDisplayText(value, code, message, maxBytes) {
+  const raw = assertString(value, code, message, { maxBytes });
+  if (CONTROL_CHARACTER.test(raw)) invalid(code, message);
+  const text = raw.trim();
+  if (!text) invalid(code, message);
+  return text;
+}
+
+export function assertProjectName(value) {
+  return assertDisplayText(value, 'invalid_project_name', 'Invalid project name.', CLOUD_LIMITS.MAX_PROJECT_NAME_BYTES);
+}
+
+export function assertApiKeyName(value) {
+  return assertDisplayText(value, 'invalid_api_key_name', 'Invalid API key name.', CLOUD_LIMITS.MAX_API_KEY_NAME_BYTES);
+}
+
+export function assertApiKeyId(value) {
+  const keyId = assertString(value, 'invalid_api_key_id', 'Invalid API key identifier.', {
+    maxBytes: CLOUD_LIMITS.MAX_API_KEY_ID_LENGTH,
+  });
+  if (!API_KEY_ID_PATTERN.test(keyId)) {
+    invalid('invalid_api_key_id', 'Invalid API key identifier.');
+  }
+  return keyId;
 }
 
 export function assertCollectionName(value, { maxBytes = CLOUD_LIMITS.MAX_COLLECTION_NAME_LENGTH } = {}) {
