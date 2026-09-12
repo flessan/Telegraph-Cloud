@@ -16,6 +16,7 @@ English|[中文](README-zh.md)
 - [Features](#features)
 - [Optional Features Guide](#optional-features-guide): dashboard / upload protection / short links / image review / anti-hotlinking / R2 storage / site customization / whitelist mode / custom domain
 - [Upload API](#upload-api)
+- [Telegraph Cloud Document Database (Phase 2)](#telegraph-cloud-document-database-phase-2)
 - [Limitations and Free Quotas](#limitations-and-free-quotas)
 - [How to Update if Already Deployed?](#how-to-update-if-already-deployed)
 - [FAQ](#faq)
@@ -78,6 +79,11 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
 | `API_KEY_PEPPER`    | `long-random-secret`      | Reserved for Telegraph Cloud developer API keys in a later phase. Store it only as a Cloudflare secret; it is not used by the legacy upload/dashboard and must never be sent to a browser. |
+| `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | Optional Phase 2 database JSON-document limit in bytes (1,024–98,304; default 98,304). Kept below the Telegram journal cap for revision metadata. |
+| `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | Optional Phase 2 collection-name limit (1–64 UTF-8 bytes). |
+| `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | Optional Phase 2 record-ID limit (26–128 UTF-8 bytes). IDs are server-generated. |
+| `TELEGRAPH_CLOUD_DEFAULT_QUERY_LIMIT` | `20` | Optional default Phase 2 database page size (1–configured maximum). |
+| `TELEGRAPH_CLOUD_MAX_QUERY_LIMIT` | `100` | Optional Phase 2 database maximum page size (1–100). |
 | `UPLOAD_BASIC_USER` | `uploader`                | Username for protecting the public upload endpoint. Leave unset to keep uploads public. |
 | `UPLOAD_BASIC_PASS` | `strong-password`         | Password for protecting the public upload endpoint. Must be set together with `UPLOAD_BASIC_USER`. |
 | `ENABLE_SHORT_URLS` | `true`                    | When enabled (and a KV namespace is bound), uploads return a short link like `/file/AbC123` instead of the long file name. Existing long links keep working. |
@@ -100,15 +106,17 @@ Bindings (`Settings` -> `Functions`):
 | Type | Variable Name | Description |
 | ----------- | ----------- | ----------- |
 | KV namespace | `img_url` | Bind a pre-created KV namespace to enable the image management dashboard; the short links feature also requires this binding |
-| KV namespace | `TELEGRAPH_CLOUD_KV` | Reserved for Telegraph Cloud's future non-authoritative materialized index, recovery outbox, projects, and API-key registry. Bind a **separate** KV namespace; it does not replace `img_url` and Phase 1 exposes no new Cloud data API yet. |
+| KV namespace | `TELEGRAPH_CLOUD_KV` | Dedicated, non-authoritative Telegraph Cloud materialized index and mutation-recovery outbox for the Phase 2 document database. Bind a **separate** namespace; it does not replace or read legacy `img_url`. |
 | R2 bucket | `img_r2` | Bind a pre-created R2 bucket to enable `STORAGE_PROVIDER=r2` |
 | Workers AI | `AI` | Bind Workers AI to enable the built-in image review provider |
 
-### Telegraph Cloud foundations (Phase 1)
+### Telegraph Cloud foundations and database (Phases 1–2)
 
-`TELEGRAPH_CLOUD_KV` is intentionally separate from the legacy `img_url` namespace. Future Telegraph Cloud services will use it as a materialized lookup/index and mutation-recovery outbox; Telegram will remain the canonical store for immutable document revisions and object bytes. Binding it now does **not** enable a new database, API-key, object-storage, or S3 endpoint yet, and it does not change existing uploads or `/file/*` links.
+`TELEGRAPH_CLOUD_KV` is intentionally separate from the legacy `img_url` namespace. It now holds the Phase 2 document database's **non-authoritative** materialized record/collection/filter index and mutation-recovery outbox. Telegram remains the canonical persistence substrate for immutable JSON document revisions. Do not bind `img_url` in its place, and do not expect this binding to alter existing uploads, `/file/*` links, R2 behavior, or dashboard media records.
 
-When developer API keys arrive in a later phase, set `API_KEY_PEPPER` as a Cloudflare secret in both Production and Preview as appropriate. Do not put it in client code, a static file, or a custom environment-management UI.
+The initial `/api/db/*` document API is owner-only: it requires both existing `BASIC_USER` and `BASIC_PASS`, and accepts the established dashboard HMAC session or Basic Auth fallback. It fails closed if those credentials are not configured. It is not a developer API-key surface, does not enable projects or S3/object routes, and exposes no Telegram identifiers. See [Telegraph Cloud Document Database (Phase 2)](#telegraph-cloud-document-database-phase-2) and the detailed [Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+
+When developer API keys arrive in Phase 3, set `API_KEY_PEPPER` as a Cloudflare secret in both Production and Preview as appropriate. Do not put it in client code, a static file, or a custom environment-management UI.
 
 ## Features
 
@@ -300,6 +308,24 @@ The endpoint works with upload tools that support custom web image hosts, such a
 > [!NOTE]
 > When storing to Telegram (the default), uploads are subject to Telegram's Bot API rate limit of roughly **20 messages per minute per channel**. Batch uploads that exceed this rate will start failing with Telegram errors — space out large batches, or switch to [R2 storage](#r2-storage), which has no such limit.
 
+## Telegraph Cloud Document Database (Phase 2)
+
+Phase 2 adds an experimental, self-hosted document API alongside the legacy image-host surface. It is a **Telegram-backed document database**, not PostgreSQL, SQL-compatible storage, or an ACID transaction system. Each create/update/delete appends a complete immutable JSON revision to Telegram; the dedicated `TELEGRAPH_CLOUD_KV` binding stores only the repairable current-record, collection, equality-filter, revision-pointer, and mutation-outbox materialized indexes.
+
+Before using it, bind `TELEGRAPH_CLOUD_KV` separately from `img_url`, configure `TG_Bot_Token` / `TG_Chat_ID`, and configure both `BASIC_USER` / `BASIC_PASS`. Unlike the legacy dashboard's open-mode compatibility behavior, database routes fail closed without those credentials. Use the existing dashboard session or Basic Auth for this interim owner-only phase; projects and developer API keys are deliberately deferred.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/db/:collection` | Create an arbitrary JSON-object record; the server creates `id` and version 1. |
+| `GET` | `/api/db/:collection` | List a bounded, deterministic `id:asc` page; supports cursor, limit, and bounded top-level string equality filters. |
+| `GET` | `/api/db/:collection/:id` | Read the current visible record. |
+| `PATCH` | `/api/db/:collection/:id` | Shallow partial update; requires `_expected_version` in JSON or `If-Match`. Every success appends a new immutable revision. |
+| `DELETE` | `/api/db/:collection/:id` | Version-preconditioned logical delete/tombstone; normal reads and lists then return no record. |
+
+Use an `Idempotency-Key` header on every mutation. Within its seven-day receipt window, a same-key retry of the same request returns the original logical result; reuse with a different request returns a conflict. A successful Telegram append followed by an index failure returns `503 {"error":"mutation_pending"}` instead of claiming success—retry the exact request with the same key after KV recovers.
+
+Record responses include `data`, `version`, `created_at`, and `updated_at`, plus an `ETag` carrying the quoted version. Telegram `file_id` / message identifiers, journal event identifiers, and internal index pointers never appear in API responses. This is not a secret manager: record JSON is materialized in KV as well as canonically journaled in Telegram, so do not store bot tokens, API-key secrets, passwords, or credentials in it. Documents, collection names, IDs, query pages, filters, cursors, and idempotency keys are bounded; the configurable environment limits are listed above. The detailed API examples, response shapes, mutation sequence, concurrency limitations, tombstones, query restrictions, and recovery behavior are in [the Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+
 ## Limitations and Free Quotas
 
 1. Files are uploaded via the Telegram Bot API and stored on Telegram's servers. Uploads are limited by the Bot API (about 50MB per file), but the Bot API file download endpoint (getFile) only supports files up to 20MB, so files larger than 20MB cannot be served back after upload — treat 20MB as the practical per-file limit. Telegram also rate-limits bots to about 20 messages per minute per channel, which caps sustained upload throughput. Both limits disappear when using [R2 storage](#r2-storage) instead
@@ -373,6 +399,12 @@ The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Cont
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 12, 2026 - Telegraph Cloud Phase 2 Document Database
+
+- Added the owner-only, Telegram-backed `/api/db/*` CRUD surface: immutable JSON revision documents, server-generated record IDs, current versions/ETags, tombstones, bounded cursor/equality-filter reads, optimistic concurrency, and idempotency-key retries.
+- Added the separate `TELEGRAPH_CLOUD_KV` materialized record/collection/filter/revision/outbox index. Telegram remains canonical for immutable revisions; a Telegram-success/KV-failure returns a retryable pending result rather than a false success.
+- Kept legacy upload, `/file/*`, Telegram/R2 providers, dashboard media management, albums, and public links unchanged. Projects, developer API keys, object/S3 APIs, and database dashboard panels remain future phases.
+
 August 19, 2026 - Telegraph Storage Interface Consolidation
 
 - Reorganized `/` as a concise product/about page for this customized fork, with `/admin` as the single storage workspace and `/login` as the focused GUI sign-in.

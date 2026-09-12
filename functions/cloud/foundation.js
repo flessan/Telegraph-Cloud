@@ -3,11 +3,10 @@ import { createTelegramClient } from './telegram-client.js';
 import { createTelegramJournalAdapter } from './telegram-journal.js';
 
 /**
- * Composition root for the persistence pieces shared by future Cloud services.
- * It intentionally creates no HTTP routes and no document/object CRUD surface.
- *
- * Phase 2 will build a document adapter from `{ index, journal }`; Phase 4 will
- * build an object adapter from the same index plus a Telegram object transport.
+ * Composition root for persistence pieces shared by Cloud services. It creates
+ * no HTTP route itself: Phase 2's document adapter composes `{ index, journal }`
+ * from here, while Phase 4 can compose an object adapter from the same index
+ * plus a Telegram object transport.
  */
 export function createCloudPersistenceFoundation(env, {
   index = null,

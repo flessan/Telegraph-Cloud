@@ -29,6 +29,18 @@ describe('Telegraph Cloud validation foundations', function () {
     rejects(() => validation.assertBucketName('bad..bucket'), 'invalid_bucket_name');
   });
 
+  it('bounds opaque idempotency keys and safe equality-query components', function () {
+    assert.strictEqual(validation.assertIdempotencyKey('retry-2026.09_12~a'), 'retry-2026.09_12~a');
+    assert.strictEqual(validation.assertDocumentQueryField('account_role'), 'account_role');
+    assert.strictEqual(validation.assertDocumentQueryValue('admin'), 'admin');
+    rejects(() => validation.assertIdempotencyKey('contains a space'), 'invalid_idempotency_key');
+    rejects(() => validation.assertIdempotencyKey('x'.repeat(validation.CLOUD_LIMITS.MAX_IDEMPOTENCY_KEY_BYTES + 1)), 'invalid_idempotency_key');
+    rejects(() => validation.assertDocumentQueryField('__proto__'), 'invalid_query_filter');
+    rejects(() => validation.assertDocumentQueryField('password'), 'invalid_query_filter');
+    rejects(() => validation.assertDocumentQueryField('profile.name'), 'invalid_query_filter');
+    rejects(() => validation.assertDocumentQueryValue('x'.repeat(validation.CLOUD_LIMITS.MAX_DOCUMENT_QUERY_VALUE_BYTES + 1)), 'invalid_query_filter');
+  });
+
   it('accepts canonical hierarchical object keys but rejects traversal and URL ambiguity', function () {
     assert.strictEqual(validation.assertObjectKey('assets/2026/résumé-猫.txt'), 'assets/2026/résumé-猫.txt');
 

@@ -46,7 +46,7 @@ function createMockKV(initial = {}) {
     },
     async put(key, value, options = {}) {
       const metadata = clone(options.metadata);
-      operations.put.push({ key, value, metadata });
+      operations.put.push({ key, value, metadata, expirationTtl: options.expirationTtl });
       store.set(key, { value, metadata });
     },
     async delete(key) {

@@ -20,17 +20,33 @@ export const CLOUD_LIMITS = Object.freeze({
   MAX_CUSTOM_METADATA_BYTES: 8 * 1024,
   MAX_LEGACY_FILE_ID_LENGTH: 512,
   MAX_TELEGRAM_FILE_ID_LENGTH: 512,
+  // Phase 2 document-database limits. Environment configuration can lower
+  // the record/document/query values, but never raise them past these hard
+  // ceilings that keep KV keys and Telegram journal payloads bounded.
+  DEFAULT_DOCUMENT_DATABASE_MAX_BYTES: 96 * 1024,
+  MAX_DOCUMENT_DATABASE_MAX_BYTES: 96 * 1024,
+  DEFAULT_DOCUMENT_QUERY_LIMIT: 20,
+  MAX_DOCUMENT_QUERY_LIMIT: 100,
+  MAX_DOCUMENT_QUERY_FILTERS: 4,
+  MAX_DOCUMENT_QUERY_FIELD_LENGTH: 64,
+  MAX_DOCUMENT_QUERY_VALUE_BYTES: 64,
+  MAX_DOCUMENT_INDEXED_FIELDS: 16,
+  MAX_DOCUMENT_CURSOR_BYTES: 1024,
+  MAX_IDEMPOTENCY_KEY_BYTES: 128,
 });
 
 const encoder = new TextEncoder();
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 const PROJECT_ID_PATTERN = /^prj_[A-Za-z0-9_-]{8,48}$/;
-const COLLECTION_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const COLLECTION_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/;
+const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BUCKET_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$/;
 const MIME_TYPE_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const CUSTOM_METADATA_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const TELEGRAM_FILE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]+$/;
+const QUERY_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+const SENSITIVE_QUERY_FIELD = /(authorization|cookie|api_?key|token|secret|password|credential|signature|session|csrf)/i;
 const DANGEROUS_JSON_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function invalid(code, message) {
@@ -92,9 +108,9 @@ export function assertProjectId(value) {
   return projectId;
 }
 
-export function assertCollectionName(value) {
+export function assertCollectionName(value, { maxBytes = CLOUD_LIMITS.MAX_COLLECTION_NAME_LENGTH } = {}) {
   const collection = assertString(value, 'invalid_collection_name', 'Invalid collection name.', {
-    maxBytes: CLOUD_LIMITS.MAX_COLLECTION_NAME_LENGTH,
+    maxBytes: Math.min(maxBytes, CLOUD_LIMITS.MAX_COLLECTION_NAME_LENGTH),
   });
   if (!COLLECTION_NAME_PATTERN.test(collection)) {
     invalid('invalid_collection_name', 'Invalid collection name.');
@@ -102,14 +118,52 @@ export function assertCollectionName(value) {
   return collection;
 }
 
-export function assertDocumentId(value) {
+export function assertDocumentId(value, { maxBytes = CLOUD_LIMITS.MAX_DOCUMENT_ID_LENGTH } = {}) {
   const documentId = assertString(value, 'invalid_document_id', 'Invalid document identifier.', {
-    maxBytes: CLOUD_LIMITS.MAX_DOCUMENT_ID_LENGTH,
+    maxBytes: Math.min(maxBytes, CLOUD_LIMITS.MAX_DOCUMENT_ID_LENGTH),
   });
   if (!DOCUMENT_ID_PATTERN.test(documentId) || documentId === '.' || documentId === '..') {
     invalid('invalid_document_id', 'Invalid document identifier.');
   }
   return documentId;
+}
+
+/**
+ * Idempotency keys are accepted only as a bounded opaque header value. Their
+ * raw value is never used in a KV key or journal entry: Phase 2 derives a
+ * SHA-256 token before persistence so a caller's retry secret is not exposed
+ * by an index inspection or Telegram revision.
+ */
+export function assertIdempotencyKey(value) {
+  const key = assertString(value, 'invalid_idempotency_key', 'Invalid Idempotency-Key header.', {
+    maxBytes: CLOUD_LIMITS.MAX_IDEMPOTENCY_KEY_BYTES,
+  });
+  if (!IDEMPOTENCY_KEY_PATTERN.test(key)) {
+    invalid('invalid_idempotency_key', 'Invalid Idempotency-Key header.');
+  }
+  return key;
+}
+
+/**
+ * The first query API intentionally indexes only safe top-level string fields.
+ * Collection documents themselves remain arbitrary JSON; this narrower rule
+ * prevents unbounded or ambiguous values from becoming KV key components.
+ */
+export function assertDocumentQueryField(value) {
+  const field = assertString(value, 'invalid_query_filter', 'Invalid document query filter.', {
+    maxBytes: CLOUD_LIMITS.MAX_DOCUMENT_QUERY_FIELD_LENGTH,
+  });
+  if (!QUERY_FIELD_PATTERN.test(field) || DANGEROUS_JSON_KEYS.has(field) || SENSITIVE_QUERY_FIELD.test(field)) {
+    invalid('invalid_query_filter', 'Invalid document query filter.');
+  }
+  return field;
+}
+
+export function assertDocumentQueryValue(value) {
+  return assertString(value, 'invalid_query_filter', 'Invalid document query filter.', {
+    allowEmpty: true,
+    maxBytes: CLOUD_LIMITS.MAX_DOCUMENT_QUERY_VALUE_BYTES,
+  });
 }
 
 /**

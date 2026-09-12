@@ -35,9 +35,9 @@ function normalizePointer(pointer) {
 }
 
 /**
- * Immutable JSON transport for future record revisions. It has append/read
- * primitives only—no Telegram message editing—and is not a public database API.
- * Phase 2 will pair it with an outbox and materialized index to implement CRUD.
+ * Immutable JSON transport for record revisions. It has append/read primitives
+ * only—no Telegram message editing—and is not itself a public database API.
+ * Phase 2 pairs it with a materialized index and mutation outbox for CRUD.
  */
 export function createTelegramJournalAdapter(env, {
   client = createTelegramClient(env),

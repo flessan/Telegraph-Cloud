@@ -1,8 +1,8 @@
 import { CloudConfigurationError } from './errors.js';
 
-// These are service boundaries, not implementations. No route constructs a
-// document database or object store in Phase 1; later phases provide adapters
-// that satisfy these contracts and keep Telegram details out of HTTP handlers.
+// These are service boundaries, not provider implementations. Phase 2 supplies
+// a document adapter that satisfies the document contract; object storage stays
+// deferred. Both keep Telegram details out of HTTP handlers.
 export const DOCUMENT_DATABASE_METHODS = Object.freeze([
   'createDocument',
   'getDocument',
@@ -33,9 +33,9 @@ function assertAdapter(adapter, methods, name) {
 }
 
 /**
- * Gives future database HTTP handlers one stable dependency. The wrapper is
+ * Gives database HTTP handlers one stable dependency. The wrapper is
  * deliberately thin: validation, versioning, journal/outbox sequencing, and
- * public response shaping are implemented by the Phase 2 adapter/service.
+ * public response shaping remain in the concrete Phase 2 adapter/service.
  */
 export function createDocumentDatabaseService(adapter) {
   const implementation = assertAdapter(adapter, DOCUMENT_DATABASE_METHODS, 'Document database');

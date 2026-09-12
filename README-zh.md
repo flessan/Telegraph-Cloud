@@ -16,6 +16,7 @@
 - [功能特性](#功能特性)
 - [可选功能开启指南](#可选功能开启指南)：后台管理 / 上传保护 / 短链接 / 图片审查 / 防盗链 / R2 存储 / 站点自定义 / 白名单模式 / 自定义域名
 - [API 上传](#api-上传)
+- [Telegraph Cloud 文档数据库（Phase 2）](#telegraph-cloud-文档数据库phase-2)
 - [使用限制与免费额度](#使用限制与免费额度)
 - [已经部署了的，如何更新？](#已经部署了的如何更新)
 - [常见问题](#常见问题)
@@ -78,6 +79,11 @@
 | `BASIC_PASS`    | `admin-password`          | 后台管理页面的登录密码，需要和 `BASIC_USER` 同时设置。 |
 | `SESSION_SECRET` | `long-random-string` | 可选但推荐。用于签名后台登录会话 Cookie 的密钥；未设置时会从 `BASIC_USER`/`BASIC_PASS` 稳定推导，以保证已有部署无需新增配置仍可使用。生产环境建议设置独立的随机值。 |
 | `API_KEY_PEPPER` | `long-random-secret` | 为后续 Telegraph Cloud 开发者 API Key 预留的密钥。只能作为 Cloudflare Secret 保存；当前旧版上传/后台不会使用它，绝不能发送到浏览器。 |
+| `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | 可选的 Phase 2 数据库 JSON 文档字节上限（1,024–98,304，默认 98,304），为 Telegram 日志版本元数据预留空间。 |
+| `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | 可选的 Phase 2 collection 名称上限（1–64 UTF-8 字节）。 |
+| `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | 可选的 Phase 2 记录 ID 上限（26–128 UTF-8 字节）；ID 由服务端生成。 |
+| `TELEGRAPH_CLOUD_DEFAULT_QUERY_LIMIT` | `20` | 可选的 Phase 2 查询默认页大小（1–配置的最大值）。 |
+| `TELEGRAPH_CLOUD_MAX_QUERY_LIMIT` | `100` | 可选的 Phase 2 查询最大页大小（1–100）。 |
 | `UPLOAD_BASIC_USER` | `uploader`             | 上传入口的 Basic Auth 用户名。不设置则保持公开上传。 |
 | `UPLOAD_BASIC_PASS` | `strong-password`      | 上传入口的 Basic Auth 密码，需要和 `UPLOAD_BASIC_USER` 同时设置。 |
 | `ENABLE_SHORT_URLS` | `true`                 | 开启后（需绑定 KV）上传将返回形如 `/file/AbC123` 的短链接，原有长链接依然有效。 |
@@ -100,15 +106,17 @@
 | 类型 | 变量名称 | 说明 |
 | ----------- | ----------- | ----------- |
 | KV 命名空间 | `img_url` | 绑定一个提前创建好的 KV 命名空间，即可开启后台图片管理；短链接功能也依赖此绑定 |
-| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | 为后续 Telegraph Cloud 的非权威物化索引、恢复 outbox、项目与 API Key 注册表预留。请绑定**独立**的 KV 命名空间；它不会替代 `img_url`，Phase 1 也不会由此开放新的 Cloud 数据 API。 |
+| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | Phase 2 文档数据库使用的独立、非权威物化索引与变更恢复 outbox。请绑定**独立**命名空间；它不会替代或读取旧版 `img_url`。 |
 | R2 存储桶 | `img_r2` | 绑定一个提前创建好的 R2 存储桶，配合 `STORAGE_PROVIDER=r2` 使用 |
 | Workers AI | `AI` | 绑定 Workers AI 即可启用内置图片审查 |
 
-### Telegraph Cloud 基础设施（Phase 1）
+### Telegraph Cloud 基础设施与文档数据库（Phase 1–2）
 
-`TELEGRAPH_CLOUD_KV` 与旧版的 `img_url` 命名空间刻意分离。后续 Telegraph Cloud 服务会将它用作物化查询/查找索引和变更恢复 outbox；Telegram 仍是不可变文档版本和对象字节的权威存储。现在绑定它**不会**启用新的数据库、API Key、对象存储或 S3 接口，也不会改变已有上传或 `/file/*` 链接。
+`TELEGRAPH_CLOUD_KV` 与旧版 `img_url` 命名空间刻意分离。它现在保存 Phase 2 文档数据库的**非权威**物化记录/collection/筛选索引和变更恢复 outbox；Telegram 仍是不可变 JSON 文档版本的权威持久化层。不要用 `img_url` 替代它；绑定该命名空间不会改动已有上传、`/file/*` 链接、R2 行为或后台媒体记录。
 
-后续开发者 API Key 功能上线时，请在 Production 与需要的 Preview 环境中将 `API_KEY_PEPPER` 配置为 Cloudflare Secret。不要把它放入客户端代码、静态文件或自定义环境变量管理界面。
+最初的 `/api/db/*` 文档接口仅供部署所有者使用：必须配置现有的 `BASIC_USER` 和 `BASIC_PASS`，并复用已有后台 HMAC 会话或 Basic Auth 兼容方式。未配置这两个凭据时接口会安全地拒绝请求。它不是开发者 API Key 接口，也不会提前启用项目、S3/对象存储路由或暴露 Telegram 标识。请阅读下方的 [Telegraph Cloud 文档数据库（Phase 2）](#telegraph-cloud-文档数据库phase-2) 和详细的英文 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+
+Phase 3 上线开发者 API Key 时，请在 Production 与需要的 Preview 环境中将 `API_KEY_PEPPER` 配置为 Cloudflare Secret。不要把它放入客户端代码、静态文件或自定义环境变量管理界面。
 
 ## 功能特性
 
@@ -297,6 +305,24 @@ curl -u uploader:strong-password -F "file=@/path/to/image.png" https://your.doma
 > [!NOTE]
 > 使用 Telegram 存储（默认）时，上传受 Telegram Bot API 速率限制约束：**每个频道约 20 条消息/分钟**。批量上传超过该速率时会开始收到 Telegram 报错——请控制批量上传的节奏，或改用没有此限制的 [R2 存储](#r2-存储)。
 
+## Telegraph Cloud 文档数据库（Phase 2）
+
+Phase 2 在旧版图床接口旁新增实验性的、自托管文档数据库 API。它是**以 Telegram 为后端的文档数据库**，不是 PostgreSQL，不兼容 SQL，也不是 ACID 或强事务系统。每次创建、更新、删除都会向 Telegram 追加一个完整且不可变的 JSON 修订；独立的 `TELEGRAPH_CLOUD_KV` 仅保存可修复的当前记录、collection、等值筛选、修订指针和变更 outbox 物化索引。
+
+使用前请分别绑定 `TELEGRAPH_CLOUD_KV`（不能与 `img_url` 混用），并配置 `TG_Bot_Token`、`TG_Chat_ID`、`BASIC_USER` 和 `BASIC_PASS`。与旧后台保留的开放模式兼容行为不同，数据库路由在没有这两个凭据时会安全地拒绝访问。本阶段临时复用已有后台会话或 Basic Auth；项目和开发者 API Key 刻意留到后续阶段。
+
+| 方法 | 路由 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/db/:collection` | 新建任意 JSON 对象记录；服务端生成 `id` 和版本 1。 |
+| `GET` | `/api/db/:collection` | 按稳定的 `id:asc` 分页列出记录；支持 cursor、limit 和受限的顶层字符串等值筛选。 |
+| `GET` | `/api/db/:collection/:id` | 读取当前可见记录。 |
+| `PATCH` | `/api/db/:collection/:id` | 浅层局部更新；JSON 中必须携带 `_expected_version` 或使用 `If-Match`。每次成功都会追加新的不可变修订。 |
+| `DELETE` | `/api/db/:collection/:id` | 带版本前置条件的逻辑删除/tombstone；普通读取和列表之后不再返回该记录。 |
+
+每个变更请求都强烈建议带上 `Idempotency-Key`。在七天的回执保留期内，使用同一个 key 重试同一个请求会返回原有逻辑结果；把同一个 key 用于不同请求会产生冲突。若 Telegram 追加成功但 KV 索引写入失败，接口会返回 `503 {"error":"mutation_pending"}`，不会虚报成功；在 KV 恢复后用同一 key 重试完全相同的请求。
+
+记录响应含有 `data`、`version`、`created_at`、`updated_at`，并通过 `ETag` 返回带引号的版本。Telegram 的 `file_id` / 消息标识、日志事件标识和内部索引指针绝不会出现在 API 响应里。它不是秘密管理器：记录 JSON 会同时物化在 KV 并以不可变形式写入 Telegram，因此不要存放 bot token、API Key secret、密码或其他凭据。文档、collection 名称、ID、查询页、筛选、cursor 与幂等 key 都有上限；可配置的环境变量列在上方。完整的 API 示例、返回结构、变更顺序、并发限制、tombstone、查询限制与恢复行为请参阅英文 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+
 ## 使用限制与免费额度
 
 1.目前图片文件默认通过 Telegram Bot API 上传并存储于 Telegram，上传单个文件大小受 Telegram Bot API 限制（约 50MB）；但 Bot API 的文件下载接口（getFile）最大仅支持 20MB，超过 20MB 的文件上传后将无法正常加载，因此实际可用的单文件大小请以 20MB 为准。此外 Telegram 对 Bot 有每频道约 20 条消息/分钟的速率限制，会制约持续批量上传的吞吐。改用 [R2 存储](#r2-存储)后这两项限制均不存在
@@ -370,6 +396,12 @@ npm run test:e2e   # 终端 2
 Hostloc @feixiang 和@乌拉擦 提供的思路和代码
 
 ## 更新日志
+2026 年 9 月 12 日--Telegraph Cloud Phase 2 文档数据库
+
+- 新增仅限部署所有者使用、以 Telegram 为后端的 `/api/db/*` CRUD：不可变 JSON 修订、服务端记录 ID、当前版本/ETag、tombstone、受限 cursor/等值筛选读取、乐观并发控制和 Idempotency-Key 重试。
+- 新增独立的 `TELEGRAPH_CLOUD_KV` 物化记录/collection/筛选/修订/outbox 索引。Telegram 仍是不可变修订的权威来源；Telegram 成功但 KV 失败时会返回可重试的 pending，而不会虚报成功。
+- 旧版上传、`/file/*`、Telegram/R2 provider、后台媒体管理、相册和公开链接均保持不变。项目、开发者 API Key、对象/S3 API 和数据库后台面板仍是后续阶段。
+
 2026 年 8 月 19 日--Telegraph Storage 界面整合
 
 - 将 `/` 整理为本定制分支的简洁产品介绍页，以 `/admin` 作为唯一存储工作区，并保留 `/login` 的专注图形化登录。
