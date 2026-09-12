@@ -1,24 +1,26 @@
 import {
+    createTelegramClient,
     createTelegramFormData,
     getFileId,
-    getTelegramFilePath,
     getUploadTarget,
-    sendToTelegram,
-    validateTelegramConfig,
-} from '../utils/telegram.js';
+} from '../cloud/telegram-client.js';
 
+// Legacy-media provider retained unchanged at its public boundary. The Bot API
+// transport is now injected through the shared Telegram client so future
+// document/object adapters do not duplicate URL construction or header policy.
 export const telegramProvider = {
     key: 'telegram',
 
     validateConfig(env) {
-        validateTelegramConfig(env);
+        createTelegramClient(env).validateConfig();
     },
 
     async upload(env, file, { fileExtension }) {
+        const telegram = createTelegramClient(env);
         const { endpoint, field } = getUploadTarget(file);
         const formData = createTelegramFormData(env.TG_Chat_ID, field, file);
 
-        const result = await sendToTelegram(formData, endpoint, env);
+        const result = await telegram.sendFormData(formData, endpoint);
         if (!result.success) {
             throw new Error(result.error);
         }
@@ -32,21 +34,21 @@ export const telegramProvider = {
     },
 
     async fetchFile(env, request, url, fileId) {
-        const fileUrl = await resolveFileUrl(env, url, fileId);
-        return fetch(fileUrl, {
-            method: request.method,
-            headers: request.headers,
-            body: request.body,
-        });
+        const telegram = createTelegramClient(env);
+        const fileUrl = await resolveFileUrl(telegram, url, fileId);
+        if (!fileUrl) {
+            return new Response('Telegram file could not be resolved.', { status: 502 });
+        }
+        return telegram.fetchDownload(fileUrl, request);
     },
 };
 
-async function resolveFileUrl(env, url, fileId) {
-    // Same threshold as the old `url.pathname.length > 39` check ('/file/' + id):
-    // ids longer than 33 characters were uploaded via the Telegram Bot API.
+async function resolveFileUrl(telegram, url, fileId) {
+    // Same threshold as the old `/file/` length check: ids longer than 33
+    // characters are Telegram Bot API ids; older Telegraph ids remain intact.
     if (fileId.length > 33) {
-        const filePath = await getTelegramFilePath(env, fileId.split('.')[0]);
-        return `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
+        const filePath = await telegram.getFilePath(fileId.split('.')[0]);
+        return telegram.getFileDownloadUrl(filePath);
     }
 
     return 'https://telegra.ph//file/' + fileId + url.search;

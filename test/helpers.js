@@ -33,6 +33,11 @@ function createMockKV(initial = {}) {
 
   return {
     operations,
+    async get(key) {
+      operations.get.push(key);
+      const entry = store.get(key);
+      return entry ? entry.value : null;
+    },
     async getWithMetadata(key) {
       operations.get.push(key);
       const entry = store.get(key);

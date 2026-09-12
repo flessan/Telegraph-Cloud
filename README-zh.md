@@ -76,6 +76,8 @@
 |-----------------|---------------------------|----------------------------------------------------------------------------------------|
 | `BASIC_USER`    | `admin`                   | 后台管理页面（/admin）的登录用户名。不设置则后台无需登录。 |
 | `BASIC_PASS`    | `admin-password`          | 后台管理页面的登录密码，需要和 `BASIC_USER` 同时设置。 |
+| `SESSION_SECRET` | `long-random-string` | 可选但推荐。用于签名后台登录会话 Cookie 的密钥；未设置时会从 `BASIC_USER`/`BASIC_PASS` 稳定推导，以保证已有部署无需新增配置仍可使用。生产环境建议设置独立的随机值。 |
+| `API_KEY_PEPPER` | `long-random-secret` | 为后续 Telegraph Cloud 开发者 API Key 预留的密钥。只能作为 Cloudflare Secret 保存；当前旧版上传/后台不会使用它，绝不能发送到浏览器。 |
 | `UPLOAD_BASIC_USER` | `uploader`             | 上传入口的 Basic Auth 用户名。不设置则保持公开上传。 |
 | `UPLOAD_BASIC_PASS` | `strong-password`      | 上传入口的 Basic Auth 密码，需要和 `UPLOAD_BASIC_USER` 同时设置。 |
 | `ENABLE_SHORT_URLS` | `true`                 | 开启后（需绑定 KV）上传将返回形如 `/file/AbC123` 的短链接，原有长链接依然有效。 |
@@ -98,8 +100,15 @@
 | 类型 | 变量名称 | 说明 |
 | ----------- | ----------- | ----------- |
 | KV 命名空间 | `img_url` | 绑定一个提前创建好的 KV 命名空间，即可开启后台图片管理；短链接功能也依赖此绑定 |
+| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | 为后续 Telegraph Cloud 的非权威物化索引、恢复 outbox、项目与 API Key 注册表预留。请绑定**独立**的 KV 命名空间；它不会替代 `img_url`，Phase 1 也不会由此开放新的 Cloud 数据 API。 |
 | R2 存储桶 | `img_r2` | 绑定一个提前创建好的 R2 存储桶，配合 `STORAGE_PROVIDER=r2` 使用 |
 | Workers AI | `AI` | 绑定 Workers AI 即可启用内置图片审查 |
+
+### Telegraph Cloud 基础设施（Phase 1）
+
+`TELEGRAPH_CLOUD_KV` 与旧版的 `img_url` 命名空间刻意分离。后续 Telegraph Cloud 服务会将它用作物化查询/查找索引和变更恢复 outbox；Telegram 仍是不可变文档版本和对象字节的权威存储。现在绑定它**不会**启用新的数据库、API Key、对象存储或 S3 接口，也不会改变已有上传或 `/file/*` 链接。
+
+后续开发者 API Key 功能上线时，请在 Production 与需要的 Preview 环境中将 `API_KEY_PEPPER` 配置为 Cloudflare Secret。不要把它放入客户端代码、静态文件或自定义环境变量管理界面。
 
 ## 功能特性
 

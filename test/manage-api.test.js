@@ -181,6 +181,27 @@ describe('manage API authentication middleware', function () {
     return mod.onRequest[1];
   }
 
+  it('returns a stable safe JSON error instead of exception details or a stack trace', async function () {
+    const { errorHandling } = await import('../functions/api/manage/_middleware.js');
+    const secret = 'telegram-token-must-not-be-exposed';
+    const res = await errorHandling(makeContext({
+      request: new Request('https://example.com/api/manage/list'),
+      next: async () => {
+        const error = new Error(`upstream failed for ${secret}`);
+        error.stack = `Error: ${secret}\n    at private-handler`;
+        throw error;
+      },
+    }));
+
+    assert.strictEqual(res.status, 500);
+    assert.strictEqual(res.headers.get('Content-Type'), 'application/json');
+    assert.strictEqual(res.headers.get('Cache-Control'), 'no-store');
+    const body = await res.text();
+    assert.deepStrictEqual(JSON.parse(body), { error: 'internal_error' });
+    assert.ok(!body.includes(secret));
+    assert.ok(!body.includes('private-handler'));
+  });
+
   it('blocks dashboard API requests with a 401 JSON response (no native Basic challenge)', async function () {
     const authentication = await getAuthentication();
     const img_url = createMockKV();

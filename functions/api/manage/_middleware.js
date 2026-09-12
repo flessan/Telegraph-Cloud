@@ -4,13 +4,20 @@ import {
 import { isEmptyBinding, jsonResponse } from "../../utils/http.js";
 import { authenticateRequest, authConfigured } from "../../utils/session.js";
 
-async function errorHandling(context) {
-    try {
-      return await context.next();
-    } catch (err) {
-      return new Response(`${err.message}\n${err.stack}`, { status: 500 });
-    }
+// Management handlers must never expose an exception message or stack: errors
+// can contain binding details, Telegram response data, or user-controlled input.
+// A future correlation id can be added without changing this stable response.
+export async function errorHandling(context) {
+  try {
+    return await context.next();
+  } catch (_) {
+    console.error('Management API request failed.');
+    return jsonResponse({ error: 'internal_error' }, {
+      status: 500,
+      headers: { 'Cache-Control': 'no-store' },
+    });
   }
+}
 
   async function authentication(context) {
     const { request, env } = context;

@@ -394,6 +394,65 @@ describe('file proxy function', function () {
     assert.strictEqual(fetchMock.calls.length, 2);
   });
 
+  it('forwards only safe delivery headers to Telegram downloads', async function () {
+    const onRequest = await getOnRequest();
+    const telegramFileId = 'AgACAgEAAxkDAAMDZt1Gzs4W8dQPWiQJxO5YSH5X-gsAAt-sMRuWNelGOSaEM_9lHHgBAAMCAANtAAM2BA';
+    const fileName = `${telegramFileId}.png`;
+    const secret = 'tg_live_never-forward-this';
+
+    fetchMock = installFetchMock(async (input, init, calls) => {
+      if (calls.length === 1) {
+        assert.strictEqual(String(input), `https://api.telegram.org/botbot-token/getFile?file_id=${telegramFileId}`);
+        return Response.json({ ok: true, result: { file_path: 'photos/file_1.png' } });
+      }
+
+      assert.strictEqual(String(input), 'https://api.telegram.org/file/botbot-token/photos/file_1.png');
+      assert.strictEqual(init.headers.get('Range'), 'bytes=0-99');
+      assert.strictEqual(init.headers.get('If-Range'), '"etag"');
+      assert.strictEqual(init.headers.get('Accept'), 'image/png');
+      for (const forbidden of ['Authorization', 'Cookie', 'X-API-Key', 'Referer', 'Origin', 'X-Unrelated']) {
+        assert.strictEqual(init.headers.get(forbidden), null, `${forbidden} must not reach Telegram`);
+      }
+      return new Response('telegram-file', { status: 200, headers: { 'Content-Type': 'image/png' } });
+    });
+
+    const headers = new Headers({
+      Accept: 'image/png',
+      Authorization: `Bearer ${secret}`,
+      Cookie: `session=${secret}`,
+      'X-API-Key': secret,
+      Referer: 'https://attacker.example/path',
+      Origin: 'https://attacker.example',
+      Range: 'bytes=0-99',
+      'If-Range': '"etag"',
+      'X-Unrelated': secret,
+    });
+    const res = await onRequest(makeContext({
+      request: new Request(`https://example.com/file/${fileName}`, { headers }),
+      env: { TG_Bot_Token: 'bot-token' },
+      params: { id: fileName },
+    }));
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(await res.text(), 'telegram-file');
+  });
+
+  it('rejects unsafe legacy file identifiers before issuing an upstream request', async function () {
+    const onRequest = await getOnRequest();
+    fetchMock = installFetchMock(async () => {
+      throw new Error('unsafe ids must not produce an upstream request');
+    });
+
+    const res = await onRequest(makeContext({
+      request: new Request('https://example.com/file/file%252Fname.png'),
+      env: { TG_Bot_Token: 'bot-token' },
+      params: { id: 'file%2Fname.png' },
+    }));
+
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(fetchMock.calls.length, 0);
+  });
+
   it('skips KV writes for admin referers', async function () {
     const onRequest = await getOnRequest();
     const img_url = createMockKV();

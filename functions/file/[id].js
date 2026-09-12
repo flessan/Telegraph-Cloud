@@ -8,6 +8,7 @@ import {
 import { isShortUrlsEnabled, looksLikeShortId, resolveShortId } from "../utils/shortlink.js";
 import { getServingProvider } from "../storage/index.js";
 import { getModerationProvider } from "../moderation/index.js";
+import { isSafeLegacyFileId } from "../cloud/validation.js";
 
 export async function onRequest(context) {
     const { request, env, params } = context;
@@ -25,7 +26,16 @@ export async function onRequest(context) {
         }), request, env);
     }
 
+    // Keep historical opaque ids working, but reject values that could mutate
+    // the upstream URL before a Telegram/Telegraph provider sees them.
+    if (!isSafeLegacyFileId(params.id)) {
+        return withCors(new Response('Not Found', { status: 404 }), request, env);
+    }
+
     const fileId = await resolveRequestedId(env, params.id);
+    if (!isSafeLegacyFileId(fileId)) {
+        return withCors(new Response('Not Found', { status: 404 }), request, env);
+    }
     const response = await getServingProvider(fileId).fetchFile(env, request, url, fileId);
 
     if (!response.ok) return withCors(response, request, env);

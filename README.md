@@ -77,6 +77,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `BASIC_USER`        | `admin`                   | Login username for the dashboard (/admin). Leave unset for a dashboard without login. |
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
+| `API_KEY_PEPPER`    | `long-random-secret`      | Reserved for Telegraph Cloud developer API keys in a later phase. Store it only as a Cloudflare secret; it is not used by the legacy upload/dashboard and must never be sent to a browser. |
 | `UPLOAD_BASIC_USER` | `uploader`                | Username for protecting the public upload endpoint. Leave unset to keep uploads public. |
 | `UPLOAD_BASIC_PASS` | `strong-password`         | Password for protecting the public upload endpoint. Must be set together with `UPLOAD_BASIC_USER`. |
 | `ENABLE_SHORT_URLS` | `true`                    | When enabled (and a KV namespace is bound), uploads return a short link like `/file/AbC123` instead of the long file name. Existing long links keep working. |
@@ -99,8 +100,15 @@ Bindings (`Settings` -> `Functions`):
 | Type | Variable Name | Description |
 | ----------- | ----------- | ----------- |
 | KV namespace | `img_url` | Bind a pre-created KV namespace to enable the image management dashboard; the short links feature also requires this binding |
+| KV namespace | `TELEGRAPH_CLOUD_KV` | Reserved for Telegraph Cloud's future non-authoritative materialized index, recovery outbox, projects, and API-key registry. Bind a **separate** KV namespace; it does not replace `img_url` and Phase 1 exposes no new Cloud data API yet. |
 | R2 bucket | `img_r2` | Bind a pre-created R2 bucket to enable `STORAGE_PROVIDER=r2` |
 | Workers AI | `AI` | Bind Workers AI to enable the built-in image review provider |
+
+### Telegraph Cloud foundations (Phase 1)
+
+`TELEGRAPH_CLOUD_KV` is intentionally separate from the legacy `img_url` namespace. Future Telegraph Cloud services will use it as a materialized lookup/index and mutation-recovery outbox; Telegram will remain the canonical store for immutable document revisions and object bytes. Binding it now does **not** enable a new database, API-key, object-storage, or S3 endpoint yet, and it does not change existing uploads or `/file/*` links.
+
+When developer API keys arrive in a later phase, set `API_KEY_PEPPER` as a Cloudflare secret in both Production and Preview as appropriate. Do not put it in client code, a static file, or a custom environment-management UI.
 
 ## Features
 
