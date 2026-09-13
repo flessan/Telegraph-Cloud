@@ -62,6 +62,17 @@ describe('deployment setup status', function () {
     assert.strictEqual(status.checks.storage, 'unknown-provider');
   });
 
+  it('does not echo an arbitrary misconfigured storage-provider value', async function () {
+    const { getSetupStatus } = await getModule();
+    const secret = 'mistaken-storage-provider-secret';
+    const status = getSetupStatus({ STORAGE_PROVIDER: secret });
+
+    assert.strictEqual(status.ready, false);
+    assert.strictEqual(status.checks.storage, 'unknown-provider');
+    assert.strictEqual(status.checks.storageProvider, 'unknown');
+    assert.ok(!JSON.stringify(status).includes(secret));
+  });
+
   it('treats an unbound KV namespace as informational, not blocking', async function () {
     const { getSetupStatus } = await getModule();
     const status = getSetupStatus({ TG_Bot_Token: 'token', TG_Chat_ID: '-100' });

@@ -40,7 +40,9 @@ function storageStatus(env) {
   }
 
   if (provider !== 'telegram') {
-    return { provider, state: 'unknown-provider', missing: ['STORAGE_PROVIDER'] };
+    // This response is public. Do not reflect an arbitrary misconfigured value
+    // because an operator might accidentally place sensitive text in it.
+    return { provider: 'unknown', state: 'unknown-provider', missing: ['STORAGE_PROVIDER'] };
   }
 
   const missing = [];
@@ -92,7 +94,7 @@ function problemsFor(storage, checks) {
   if (storage.state === 'unknown-provider') {
     problems.push({
       severity: 'error',
-      message: `上传不可用：STORAGE_PROVIDER 的值 "${storage.provider}" 无法识别，可用值为 telegram 或 r2。`,
+      message: '上传不可用：STORAGE_PROVIDER 的值无法识别，可用值为 telegram 或 r2。',
     });
   }
 

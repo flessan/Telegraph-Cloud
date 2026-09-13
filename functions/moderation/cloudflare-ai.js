@@ -50,7 +50,9 @@ async function runWithFallback(env, models, input) {
         try {
             return await env.AI.run(model, input);
         } catch (error) {
-            console.error(`Workers AI model ${model} failed: ${error.message}`);
+            // Model/provider errors may include request or upstream details.
+            // Keep fallback behavior while avoiding sensitive log material.
+            console.error('Workers AI moderation model failed.');
             lastError = error;
         }
     }

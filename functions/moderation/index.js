@@ -24,7 +24,10 @@ export function getModerationProvider(env) {
     if (name) {
         const provider = PROVIDERS[name];
         if (!provider) {
-            console.error(`Unknown MODERATION_PROVIDER: ${env.MODERATION_PROVIDER}`);
+            // Configuration is deployment-owned but can still accidentally
+            // contain sensitive text; the public fail-open fallback needs no
+            // value in a platform log.
+            console.error('Unknown moderation provider configuration.');
             return noneProvider;
         }
         return provider;

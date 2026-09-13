@@ -11,8 +11,16 @@ const SAFE_REQUEST_HEADERS = new Set([
   'user-agent',
 ]);
 const SENSITIVE_HEADER_NAME = /(authorization|cookie|api[-_]?key|token|secret|password|credential|signature|session|csrf)/i;
-const TELEGRAM_BOT_PATH = /(https?:\/\/api\.telegram\.org\/(?:file\/)?bot)[^/?\s]+/gi;
-const SENSITIVE_QUERY_VALUE = /([?&](?:api[-_]?key|token|secret|password|credential|signature|session)=)[^&#\s]*/gi;
+// Breadcrumb/context field names can hold SigV4 source material even where the
+// header name itself is not secret-shaped (for example x-amz-content-sha256).
+const SENSITIVE_TELEMETRY_FIELD_NAME = /(authorization|cookie|api[-_ ]?key|key|token|secret|password|credential|signature|session|csrf|query(?:[-_ ]?string)?|canonical(?:[-_ ]?request)?|string[-_ ]?to[-_ ]?sign|payload[-_ ]?hash|(?:request[-_ ]?)?body|x[-_ ]?amz[-_ ]?(?:content[-_ ]?)?sha256)/i;
+const TELEGRAM_BOT_PATH = /(https?:\/\/api\.telegram\.org\/(?:file\/)?bot)[^/?\s]+(?:\/[^\s?#]*)?/gi;
+const SENSITIVE_QUERY_VALUE = /([?&](?:(?:x-amz-)?(?:api[-_]?key|key|token|secret|password|credential|signature|session|chat[-_]?id|file[-_]?(?:id|path)))=)[^&#\s]*/gi;
+// A complete canonical request/string-to-sign includes a payload hash and can
+// include a signature. Preserve no fragment of it rather than attempting to
+// parse a multiline format from a telemetry message.
+const SENSITIVE_SIGV4_MATERIAL = /(?:\b(?:canonical(?:[-_ ]?request)?|string[-_ ]?to[-_ ]?sign|payload[-_ ]?hash|x-amz-(?:content-)?sha256|x-amz-signature)\b|\bAWS4-HMAC-SHA256\s+Credential\s*=)/i;
+const SENSITIVE_INLINE_VALUE = /(\b(?:api[-_ ]?key|key|token|secret(?:[-_ ]?(?:access[-_ ]?key|key))?|password|credential|authorization|signature|session|canonical(?:[-_ ]?request)?|string[-_ ]?to[-_ ]?sign|payload[-_ ]?hash|chat(?:[-_ ]?id)?|file[-_ ]?(?:id|path)|telegram(?:[-_ ]?(?:id|file[-_ ]?(?:id|path)))?)\b\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
 // Developer keys are Bearer-only, but scrub an accidentally interpolated key
 // from telemetry messages/breadcrumbs as a defense in depth as well.
 const DEVELOPER_API_KEY = /\btg_live_[A-Za-z0-9_-]+\b/g;
@@ -20,6 +28,9 @@ const DEVELOPER_API_KEY = /\btg_live_[A-Za-z0-9_-]+\b/g;
 // credential identifiers and failed Authorization material out of telemetry.
 const S3_ACCESS_KEY_ID = /\btgsk_live_[A-Za-z0-9_-]+\b/g;
 const SAFE_CF_FIELDS = ['asn', 'colo', 'country', 'httpProtocol', 'tlsCipher', 'tlsVersion'];
+const SAFE_OPERATIONAL_SIGNALS = Object.freeze({
+  operator_readiness: new Set(['ready_for_smoke', 'degraded']),
+});
 const SENTRY_DSN = 'https://219f636ac7bde5edab2c3e16885cb535@o4507041519108096.ingest.us.sentry.io/4507541492727808';
 
 function telemetryEnabled(env) {
@@ -51,6 +62,21 @@ function isSensitiveHeader(name) {
   return SENSITIVE_HEADER_NAME.test(name);
 }
 
+function isTelegramIdentifierField(name) {
+  const compact = String(name).toLowerCase().replace(/[-_ ]/g, '');
+  return compact.includes('telegram')
+    || compact === 'chat'
+    || compact.includes('chatid')
+    || compact.includes('fileid')
+    || compact.includes('filepath');
+}
+
+function isSensitiveTelemetryField(name) {
+  return SENSITIVE_HEADER_NAME.test(name)
+    || SENSITIVE_TELEMETRY_FIELD_NAME.test(name)
+    || isTelegramIdentifierField(name);
+}
+
 /**
  * Returns a deliberately small request-header context. Sensitive headers are
  * represented as `[redacted]`; unrecognised headers are omitted entirely.
@@ -69,37 +95,75 @@ export function redactTelemetryHeaders(headers) {
 }
 
 /**
- * Drops request queries/fragments and masks Bot API path tokens before data is
- * sent to telemetry. A query might contain a future API key or a legacy token.
+ * Removes caller-selected application identifiers from known dynamic routes.
+ * A route family remains useful for diagnostics, while object paths, project
+ * IDs, collection/record IDs, legacy file IDs, and dashboard resource names
+ * never reach remote telemetry.
  */
-function redactObjectStoragePath(value) {
-  // Object keys are application-controlled names and can accidentally contain
-  // customer identifiers or opaque data. Keep the route/bucket diagnostic but
-  // never send the complete Phase 4 key to telemetry.
+function redactSensitiveApplicationPath(value) {
   return String(value)
-    .replace(/(\/api\/storage\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]')
-    .replace(/(\/s3\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]');
+    .replace(/\/api\/storage(?:\/[^?#]*)?/g, '/api/storage/[resource]')
+    .replace(/\/s3(?:\/[^?#]*)?/g, '/s3/[resource]')
+    .replace(/\/api\/projects(?:\/[^?#]*)?/g, '/api/projects/[resource]')
+    .replace(/\/api\/db(?:\/[^?#]*)?/g, '/api/db/[resource]')
+    .replace(/\/api\/manage(?:\/[^?#]*)?/g, '/api/manage/[resource]')
+    .replace(/\/file(?:\/[^?#]*)?/g, '/file/[resource]');
 }
 
+/**
+ * Drops request queries/fragments and masks Bot API path tokens and dynamic
+ * application resources before data is sent to telemetry.
+ */
 export function sanitizeTelemetryUrl(value) {
   if (typeof value !== 'string' || !value) return '';
   try {
     const url = new URL(value);
-    // Redact after recombining origin + path: Telegram tokens live in the path
-    // (`/bot<token>`), while the URL parser intentionally separates the host.
-    return redactObjectStoragePath(redactSensitiveText(`${url.origin}${url.pathname}`));
+    // Work on pathname rather than the complete origin + path so an endpoint
+    // hostname such as s3.example.test is not mistaken for a /s3 route. Bot
+    // token redaction needs the complete Telegram URL because its token starts
+    // immediately after /bot rather than in a query/header field.
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === 'api.telegram.org') {
+      return redactSensitiveText(`${url.origin}${url.pathname}`);
+    }
+    // The model-discovery API contains an account identifier in its path. It
+    // is outbound operational traffic, not useful request context, so retain
+    // only the provider origin.
+    if (hostname === 'api.cloudflare.com') {
+      return `${url.origin}/[provider-resource]`;
+    }
+    return `${url.origin}${redactSensitiveApplicationPath(redactSensitiveText(url.pathname))}`;
   } catch (_) {
-    return redactObjectStoragePath(redactSensitiveText(value.split(/[?#]/, 1)[0]));
+    return redactSensitiveApplicationPath(redactSensitiveText(value.split(/[?#]/, 1)[0]));
   }
 }
 
 export function redactSensitiveText(value) {
   if (typeof value !== 'string') return value;
+  if (SENSITIVE_SIGV4_MATERIAL.test(value)) return '[redacted sensitive SigV4 request material]';
+  // Global regular expressions retain lastIndex after a match in some runtime
+  // paths. Reset them so a prior breadcrumb cannot make the next URL skip
+  // redaction.
+  TELEGRAM_BOT_PATH.lastIndex = 0;
+  SENSITIVE_QUERY_VALUE.lastIndex = 0;
+  SENSITIVE_INLINE_VALUE.lastIndex = 0;
+  DEVELOPER_API_KEY.lastIndex = 0;
+  S3_ACCESS_KEY_ID.lastIndex = 0;
   return value
-    .replace(TELEGRAM_BOT_PATH, '$1[redacted]')
+    .replace(TELEGRAM_BOT_PATH, '$1[redacted]/[telegram-resource]')
     .replace(SENSITIVE_QUERY_VALUE, '$1[redacted]')
+    .replace(SENSITIVE_INLINE_VALUE, '$1[redacted]')
     .replace(DEVELOPER_API_KEY, 'tg_live_[redacted]')
     .replace(S3_ACCESS_KEY_ID, 'tgsk_live_[redacted]');
+}
+
+function sanitizeEmbeddedTelemetryText(value) {
+  if (typeof value !== 'string') return value;
+  // Automatic spans often contain a method followed by a full URL rather than
+  // an event.request.url field. Sanitize each URL before ordinary text
+  // redaction so query values and dynamic paths cannot survive in a span.
+  const urlsSanitized = value.replace(/https?:\/\/[^\s<>"']+/gi, (url) => sanitizeTelemetryUrl(url));
+  return redactSensitiveApplicationPath(redactSensitiveText(urlsSanitized));
 }
 
 function safeCfContext(cf) {
@@ -120,10 +184,10 @@ export function buildSafeRequestTelemetry(request) {
   let hostname = '';
   try {
     const url = new URL(rawUrl);
-    path = redactObjectStoragePath(redactSensitiveText(url.pathname));
+    path = redactSensitiveApplicationPath(redactSensitiveText(url.pathname));
     hostname = url.hostname;
   } catch (_) {
-    path = redactObjectStoragePath(redactSensitiveText(String(rawUrl).split(/[?#]/, 1)[0]));
+    path = redactSensitiveApplicationPath(redactSensitiveText(String(rawUrl).split(/[?#]/, 1)[0]));
   }
 
   return {
@@ -137,35 +201,75 @@ export function buildSafeRequestTelemetry(request) {
 }
 
 /**
+ * Recursively scrubs values captured by automatic Sentry breadcrumbs/context.
+ * This is intentionally defensive: code should never attach a body or SigV4
+ * internals, but field-name redaction prevents an accidental future attachment
+ * from bypassing the request/header scrubber.
+ */
+function redactTelemetryData(value, depth = 0) {
+  if (typeof value === 'string') return sanitizeEmbeddedTelemetryText(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= 5) return REDACTED;
+  if (Array.isArray(value)) return value.map((entry) => redactTelemetryData(entry, depth + 1));
+
+  const safe = {};
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = String(rawKey);
+    const lower = key.toLowerCase();
+    if (isSensitiveTelemetryField(lower)) {
+      safe[key] = REDACTED;
+    } else if (lower === 'headers') {
+      safe[key] = redactTelemetryHeaders(rawValue);
+    } else if (lower === 'url' || lower === 'uri') {
+      safe[key] = typeof rawValue === 'string' ? sanitizeTelemetryUrl(rawValue) : REDACTED;
+    } else if (lower === 'path') {
+      safe[key] = typeof rawValue === 'string'
+        ? redactSensitiveApplicationPath(redactSensitiveText(rawValue))
+        : REDACTED;
+    } else if (lower === 'data') {
+      // A string data field is indistinguishable from a captured request body.
+      // Structured data may retain only recursively scrubbed safe metadata.
+      safe[key] = rawValue && typeof rawValue === 'object'
+        ? redactTelemetryData(rawValue, depth + 1)
+        : REDACTED;
+    } else {
+      safe[key] = redactTelemetryData(rawValue, depth + 1);
+    }
+  }
+  return safe;
+}
+
+/**
  * Sentry may collect a request automatically as well as through telemetryData.
- * Scrub that event at the integration boundary so credentials never reach the
- * remote telemetry service through either route.
+ * Scrub that event at the integration boundary so credentials, signatures,
+ * payload hashes/bodies, and raw dynamic paths never reach the remote service.
  */
 export function redactTelemetryEvent(event) {
   if (!event || typeof event !== 'object') return event;
   const safeEvent = { ...event };
 
   if (event.request && typeof event.request === 'object') {
-    const request = { ...event.request };
+    const request = redactTelemetryData(event.request);
     request.headers = redactTelemetryHeaders(event.request.headers);
-    if (request.url) request.url = sanitizeTelemetryUrl(String(request.url));
+    if (event.request.url) request.url = sanitizeTelemetryUrl(String(event.request.url));
     // Request bodies can include credentials, multipart data, or documents.
     delete request.data;
     delete request.cookies;
+    delete request.body;
     safeEvent.request = request;
   }
 
   if (typeof event.message === 'string') {
-    safeEvent.message = redactSensitiveText(event.message);
+    safeEvent.message = sanitizeEmbeddedTelemetryText(event.message);
+  }
+  if (typeof event.transaction === 'string') {
+    safeEvent.transaction = redactSensitiveApplicationPath(redactSensitiveText(event.transaction));
   }
 
   if (event.exception?.values && Array.isArray(event.exception.values)) {
     safeEvent.exception = {
       ...event.exception,
-      values: event.exception.values.map((exception) => ({
-        ...exception,
-        ...(typeof exception?.value === 'string' ? { value: redactSensitiveText(exception.value) } : {}),
-      })),
+      values: event.exception.values.map((exception) => redactTelemetryData(exception)),
     };
   }
 
@@ -173,23 +277,70 @@ export function redactTelemetryEvent(event) {
     safeEvent.breadcrumbs = event.breadcrumbs.map((breadcrumb) => redactBreadcrumb(breadcrumb));
   }
 
+  for (const field of ['contexts', 'extra', 'tags', 'fingerprint', 'spans']) {
+    if (event[field] && typeof event[field] === 'object') {
+      safeEvent[field] = redactTelemetryData(event[field]);
+    }
+  }
+
   return safeEvent;
 }
 
 function redactBreadcrumb(breadcrumb) {
   if (!breadcrumb || typeof breadcrumb !== 'object') return breadcrumb;
-  const safe = { ...breadcrumb };
-  if (typeof safe.message === 'string') safe.message = redactSensitiveText(safe.message);
-  if (safe.data && typeof safe.data === 'object') {
-    const data = { ...safe.data };
-    if (data.headers) data.headers = redactTelemetryHeaders(data.headers);
-    if (typeof data.url === 'string') data.url = sanitizeTelemetryUrl(data.url);
-    for (const key of Object.keys(data)) {
-      if (isSensitiveHeader(key)) data[key] = REDACTED;
-    }
-    safe.data = data;
-  }
+  const safe = redactTelemetryData(breadcrumb);
+  if (typeof breadcrumb.message === 'string') safe.message = sanitizeEmbeddedTelemetryText(breadcrumb.message);
   return safe;
+}
+
+function routeFamily(request) {
+  try {
+    const pathname = new URL(request?.url || '').pathname;
+    if (pathname === '/api/health') return 'health';
+    if (pathname === '/api/config') return 'configuration';
+    if (pathname.startsWith('/api/projects')) return 'projects';
+    if (pathname.startsWith('/api/storage')) return 'storage';
+    if (pathname.startsWith('/api/db')) return 'database';
+    if (pathname.startsWith('/api/manage')) return 'management';
+    if (pathname.startsWith('/s3')) return 's3';
+    if (pathname.startsWith('/upload')) return 'upload';
+    if (pathname.startsWith('/file')) return 'file';
+  } catch (_) {
+    // A malformed telemetry URL gets the same bounded fallback as any unknown
+    // route; it is never copied into a tag.
+  }
+  return 'other';
+}
+
+function responseClass(response, exception = false) {
+  if (exception) return 'exception';
+  const status = Number(response?.status);
+  if (!Number.isInteger(status) || status < 100 || status > 599) return 'unknown';
+  return `${Math.floor(status / 100)}xx`;
+}
+
+function setSafeTelemetryTag(sentry, key, value) {
+  try {
+    if (sentry && typeof sentry.setTag === 'function') sentry.setTag(key, value);
+  } catch (_) {
+    // Observability must not turn a completed application request into a 5xx.
+  }
+}
+
+function recordRequestOutcome(sentry, request, response, exception = false) {
+  setSafeTelemetryTag(sentry, 'telegraph_cloud.route_family', routeFamily(request));
+  setSafeTelemetryTag(sentry, 'telegraph_cloud.response_class', responseClass(response, exception));
+}
+
+/**
+ * Adds a fixed, allowlisted operational outcome to an already-sampled Sentry
+ * transaction. It deliberately rejects arbitrary names/values so callers
+ * cannot turn this helper into a path, identifier, credential, or body sink.
+ */
+export function recordOperationalSignal(context, signal, outcome) {
+  if (!Object.prototype.hasOwnProperty.call(SAFE_OPERATIONAL_SIGNALS, signal)
+    || !SAFE_OPERATIONAL_SIGNALS[signal].has(outcome)) return;
+  setSafeTelemetryTag(context?.data?.sentry, 'telegraph_cloud.signal', `${signal}:${outcome}`);
 }
 
 export function createTelemetryOptions(sampleRate) {
@@ -239,7 +390,14 @@ export async function telemetryData(context) {
   }
 
   try {
-    return await context.next();
+    const response = await context.next();
+    recordRequestOutcome(sentry, context.request, response);
+    return response;
+  } catch (error) {
+    // The result is a fixed enum; never attach the caught Error, which can
+    // contain a request URL or upstream implementation detail.
+    recordRequestOutcome(sentry, context.request, null, true);
+    throw error;
   } finally {
     try {
       if (transaction && typeof transaction.finish === 'function') transaction.finish();

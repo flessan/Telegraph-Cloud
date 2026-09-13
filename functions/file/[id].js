@@ -111,8 +111,11 @@ async function moderateFile(env, url, fileId, metadata, response) {
         const provider = getModerationProvider(env);
         const label = await provider.moderate(env, { fileId, search: url.search, response });
         if (label) metadata.Label = label;
-    } catch (error) {
-        console.error("Error during content moderation: " + error.message);
+    } catch (_) {
+        // A moderation provider error can contain an upstream URL, key, or
+        // caller-controlled detail. Preserve the existing fail-open behavior
+        // without emitting that material to platform logs.
+        console.error('Content moderation failed.');
     }
     return { blocked: isBlocked(metadata) };
 }

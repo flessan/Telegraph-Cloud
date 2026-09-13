@@ -19,6 +19,7 @@ English|[中文](README-zh.md)
 - [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23)
 - [Telegraph Cloud Projects and Developer API Keys (Phase 3)](#telegraph-cloud-projects-and-developer-api-keys-phase-3)
 - [Telegraph Cloud Object Storage (Phases 4–6B)](#telegraph-cloud-object-storage-phases-46b)
+- [Production Readiness and Operations (Phase 6C)](#production-readiness-and-operations-phase-6c)
 - [Limitations and Free Quotas](#limitations-and-free-quotas)
 - [How to Update if Already Deployed?](#how-to-update-if-already-deployed)
 - [FAQ](#faq)
@@ -80,7 +81,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `BASIC_USER`        | `admin`                   | Login username for the dashboard (/admin). Leave unset for a dashboard without login. |
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
-| `API_KEY_PEPPER`    | `openssl rand -base64 48` | Required to create or verify Phases 3–5 `tg_live_…` developer keys and protect Phase 5/5.1 object-list/repair tokens. Use a unique random Cloudflare **Secret** of at least 32 bytes per environment. It is not a dashboard password or S3 signing secret and must never be sent to a browser, Telegram, document record, or object metadata. Replacing it invalidates existing developer keys and outstanding developer/object-list/repair tokens. |
+| `API_KEY_PEPPER`    | `openssl rand -base64 48` | Required to create or verify Phases 3–5 `tg_live_…` developer keys and protect Phase 5/5.1 object-list/repair tokens. Use a unique random Cloudflare **Secret** of at least 32 bytes per environment. It is not a dashboard password or S3 signing secret and must never be sent to a browser, Telegram, document record, or object metadata. Replacing it invalidates existing developer keys and outstanding developer/object-list/repair tokens; follow the disruptive [pepper rotation procedure](docs/telegraph-cloud-production-readiness.md#62-emergency-rotation-api_key_pepper). |
 | `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | Optional Phase 2 database JSON-document limit in bytes (1,024–98,304; default 98,304). Kept below the Telegram journal cap for revision metadata. |
 | `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | Optional Phase 2 collection-name limit (1–64 UTF-8 bytes). |
 | `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | Optional Phase 2 record-ID limit (26–128 UTF-8 bytes). IDs are server-generated. |
@@ -89,7 +90,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `TELEGRAPH_CLOUD_MAX_OBJECT_BYTES` | `10485760` | Optional Phases 4–6B object body limit in bytes (1–20,971,520; default 10 MiB). The Telegram-backed adapter uses bounded buffers for hashing/multipart upload; Phase 6B SigV4 hashes a bounded request clone before the adapter reads the original branch. The 20 MiB hard ceiling preserves practical Bot API retrieval compatibility. |
 | `TELEGRAPH_CLOUD_DEFAULT_OBJECT_LIST_LIMIT` | `50` | Optional Phase 5 default page size for `GET /api/storage/:bucket` (1–configured maximum; default 50). |
 | `TELEGRAPH_CLOUD_MAX_OBJECT_LIST_LIMIT` | `100` | Optional Phase 5 maximum list page size (1–100; default 100). Keep it bounded to preserve worker/KV work; Phase 6B S3 `max-keys` uses the same hard bound. |
-| `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER` | `openssl rand -base64 48` | **Required for Phase 6B `/s3/*`.** A distinct random Cloudflare **Secret** (32–4,096 UTF-8 bytes) that derives/verifies transient S3 credential secrets and protects S3 continuation tokens under separate domains. Never reuse or expose `API_KEY_PEPPER`; replacing this secret invalidates all S3 credentials/tokens. |
+| `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER` | `openssl rand -base64 48` | **Required for Phase 6B `/s3/*`.** A distinct random Cloudflare **Secret** (32–4,096 UTF-8 bytes) that derives/verifies transient S3 credential secrets and protects S3 continuation tokens under separate domains. Never reuse or expose `API_KEY_PEPPER`; replacing this secret invalidates all S3 credentials/tokens and requires the disruptive [S3 pepper recovery procedure](docs/telegraph-cloud-production-readiness.md#63-emergency-rotation-telegraph_cloud_s3_credential_pepper). |
 | `TELEGRAPH_CLOUD_S3_ENDPOINT_HOST` | `s3.example.com` | **Required for Phase 6B `/s3/*`.** Exact public path-style host, optionally with a non-default port (for example `s3.example.com:8443`), with no scheme/path/wildcard. SigV4 `host` must match it and the actual request endpoint. |
 | `TELEGRAPH_CLOUD_S3_MAX_CLOCK_SKEW_SECONDS` | `300` | Optional Phase 6B SigV4 UTC clock window; decimal 1–900 seconds, default 300. Smaller is safer where client clocks permit. |
 | `UPLOAD_BASIC_USER` | `uploader`                | Username for protecting the public upload endpoint. Leave unset to keep uploads public. |
@@ -128,9 +129,19 @@ Dashboard-only S3 credential endpoints are `POST`/`GET` `/api/projects/:id/s3-cr
 
 See [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23), [Telegraph Cloud Object Storage (Phases 4–6B)](#telegraph-cloud-object-storage-phases-46b), the [Phase 3 projects/key reference](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md), the [Phase 4 object-engine reference](docs/telegraph-cloud-phase-4-object-storage.md), [Phase 5 listing/range reference](docs/telegraph-cloud-phase-5-object-semantics.md), [Phase 5.1 operator repair reference](docs/telegraph-cloud-phase-5-1-index-repair.md), the [Phase 6B S3 SigV4 reference](docs/telegraph-cloud-phase-6b-sigv4.md), the [historical Phase 6A migration note](docs/telegraph-cloud-phase-6a-s3-protocol.md), and the [Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
 
+### Production Readiness and Operations (Phase 6C)
+
+Before enabling `/s3/*` outside an isolated test deployment, read the [Phase 6C production-readiness guide](docs/telegraph-cloud-production-readiness.md). It documents the separate Production/Preview Pages audit, exact case-sensitive variable names (`TG_Bot_Token` and `TG_Chat_ID`, not all-uppercase aliases), binding separation, eventual-consistency/recovery limits, edge-rate-control recommendations, individual credential revocation, and disruptive pepper rotation.
+
+- `GET /api/health` is a deliberately minimal public legacy-configuration signal (`{"status":"ok"}` or `{"status":"degraded"}`); it does not reveal or prove S3/KV/Telegram readiness.
+- Dashboard-authenticated `GET /api/projects/diagnostics` returns enum-only configuration/readiness states. `?probe=telegram` adds a one-shot `getMe` reachability check without returning bot/chat data; it does not prove channel/write readiness.
+- `scripts/telegraph-cloud-staged-smoke.cjs` is an explicit-confirmation, no-secret-output procedure for an authorized Preview/Production test. It creates temporary data, verifies external signed PUT/GET/HEAD/LIST/range/DELETE, isolation, inactive-project rejection, revoke/replacement, and attempts logical cleanup. It reports a known cleanup failure, but cannot promise physical Telegram deletion or recovery of an unreturned credential after a network failure.
+
+The release candidate is not production-approved merely because local tests pass: audit the exact deployed Pages commit, verify the endpoint host, and run the documented staged smoke with approved credentials. Do not place a real credential, Bot token, pepper, canonical request, signature, payload hash/body, chat ID, or raw object path in a ticket, log, shell history, or commit.
+
 ## Features
 
-1. Unlimited image storage, you can upload an unlimited number of images
+1. Self-hosted image storage with capacity and throughput determined by Telegram/R2, Cloudflare quotas, configured limits, and your own operating controls — it is not unlimited storage
 
 2. No need to purchase a server, hosted on Cloudflare's network. When usage does not exceed Cloudflare's free quota, it's completely free
 
@@ -448,6 +459,12 @@ The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Cont
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 13, 2026 - Telegraph Cloud Phase 6C Production Hardening
+
+- Added a minimal public `/api/health` signal, dashboard-authenticated enum-only `/api/projects/diagnostics` (including an opt-in no-detail Telegram `getMe` reachability probe), and fixed-metadata sampled operational tags. No diagnostic returns secrets, binding values, project internals, or Telegram identifiers.
+- Strengthened application telemetry scrubbing for raw dynamic resource paths, Telegram resource URLs, embedded provider spans, S3 canonical requests/string-to-sign, signatures, payload hashes/bodies, and nested automatic Sentry breadcrumb/context fields. Legacy `/upload` now uses an opaque safe error for caught provider/runtime detail instead of reflecting/logging it. `/s3/*` retains its deliberately telemetry-free XML middleware boundary.
+- Added the confirmation-gated `scripts/telegraph-cloud-staged-smoke.cjs`, local smoke-utility coverage, privacy tests, and the detailed [production-readiness/runbook](docs/telegraph-cloud-production-readiness.md): Pages Production/Preview audit, honest KV/Telegram recovery limits, edge-control recommendations, compromised-credential revocation, replacement, inactive-project behavior, and disruptive `API_KEY_PEPPER`/S3-pepper rotation.
+
 September 13, 2026 - Telegraph Cloud Phase 6B S3 SigV4 Credentials
 
 - Replaced the temporary Phase 6A dashboard-Basic/test-project `/s3/*` bypass with strict header-form `AWS4-HMAC-SHA256` verification. The fixed `us-east-1` / `s3` policy verifies canonical request URI/query/headers, endpoint host, UTC skew, and exact bounded body hash before the existing protocol adapter/object facade runs.

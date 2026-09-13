@@ -45,6 +45,28 @@ export function validateTelegramConfig(env) {
   }
 }
 
+/**
+ * A deliberately narrow, opt-in Bot API liveness probe for authenticated
+ * operator diagnostics. `getMe` checks that the configured token reaches the
+ * API, but it does not expose the returned bot record, inspect the chat, or
+ * prove channel permissions/write readiness. There is no retry here: a probe
+ * must not turn one operator click into a Telegram request burst.
+ */
+export async function probeTelegramApi(env, { fetchImpl = globalThis.fetch } = {}) {
+  try {
+    validateTelegramConfig(env);
+    if (typeof fetchImpl !== 'function') return false;
+    const response = await fetchImpl(botApiUrl(env, 'getMe'), { method: 'GET' });
+    if (!response.ok) return false;
+    const payload = await response.json();
+    return payload?.ok === true;
+  } catch (_) {
+    // A failed probe is only an enum-valued diagnostic outcome. Never log an
+    // exception here because it can include a Bot API URL containing the token.
+    return false;
+  }
+}
+
 export function getUploadTarget(file) {
   if (file.type.startsWith('image/')) {
     return { endpoint: 'sendPhoto', field: 'photo' };
