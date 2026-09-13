@@ -792,13 +792,18 @@ export function createTelegramObjectStorage(env, {
     );
   }
 
+  async function readBucket(bucket) {
+    const safeBucket = normalizeBucket(bucket);
+    const value = await indexGet(OBJECT_INDEX_NAMESPACES.bucket, safeProjectId, safeBucket);
+    if (value === null) return null;
+    const record = normalizeBucketRecord(value);
+    if (record.project_id !== safeProjectId || record.bucket !== safeBucket) throw corruptIndex();
+    return record;
+  }
+
   async function ensureBucket(manifest) {
-    const value = await indexGet(OBJECT_INDEX_NAMESPACES.bucket, safeProjectId, manifest.bucket);
-    if (value !== null) {
-      const record = normalizeBucketRecord(value);
-      if (record.project_id !== safeProjectId || record.bucket !== manifest.bucket) throw corruptIndex();
-      return record;
-    }
+    const existing = await readBucket(manifest.bucket);
+    if (existing) return existing;
     const timestamp = timestampFrom(now);
     const bucket = {
       schema: OBJECT_BUCKET_SCHEMA,
@@ -809,6 +814,14 @@ export function createTelegramObjectStorage(env, {
     };
     await indexPut(OBJECT_INDEX_NAMESPACES.bucket, [safeProjectId, manifest.bucket], bucket);
     return bucket;
+  }
+
+  // This narrow non-mutating seam exists for protocol adapters that must
+  // distinguish a marker-backed bucket from an empty/unknown bucket (for
+  // example S3's NoSuchBucket). It remains project-bound and does not turn
+  // bucket administration into a generic object-service operation.
+  async function bucketExists(bucket) {
+    return (await readBucket(bucket)) !== null;
   }
 
   async function allocateMutationId(idempotencyKey) {
@@ -1287,6 +1300,7 @@ export function createTelegramObjectStorage(env, {
     headObject: (bucket, key, conditions) => generic.headObject(scope, bucket, key, conditions),
     deleteObject: (bucket, key, input) => generic.deleteObject(scope, bucket, key, input),
     listObjects: (bucket, input) => generic.listObjects(scope, bucket, input),
+    bucketExists: (bucket) => bucketExists(bucket),
     limits,
   });
 }

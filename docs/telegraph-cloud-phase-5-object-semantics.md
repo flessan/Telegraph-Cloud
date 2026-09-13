@@ -252,8 +252,8 @@ npm test
 
 A Pages/Wrangler smoke should also verify that the Functions router starts with a KV binding, that `GET /api/storage/:bucket` receives the Bearer-only `storage:read` boundary, and that legacy `/file/*` still responds through its unchanged path.
 
-## Phase 5.1 repair and deliberately scoped Phase 6 direction
+## Phase 5.1 repair and historical Phase 6 direction
 
 The former pre-Phase-5 migration recommendation is now delivered as [Phase 5.1](telegraph-cloud-phase-5-1-index-repair.md): a dashboard-authenticated, project-bound, checkpointed manifest scan with dry-run/apply modes, bounded pages, safe count-only progress, retryable dependency failures, and deterministic index-path/terminal-leaf repair/removal. It does not read bytes, create revisions, expose pointers, or expand `/api/storage/*`.
 
-Before considering any S3 protocol work, first gather operational experience with that repair checkpoint. If follow-on work is justified, scope it to a separate **operator-only raw-index audit planner** for reporting orphan leaves/retained branch pressure in bounded, manifest-revalidated passes. It must retain dry-run-first behavior and have its own concurrency/retention threat model. Do not combine it with SigV4, presigned URLs, S3 XML, multipart state, an SDK, or public APIs.
+The former recommendation to defer all S3 protocol work is superseded only by the separately scoped [Phase 6A S3 protocol compatibility layer](telegraph-cloud-phase-6a-s3-protocol.md): an administrator-only, server-configured-project XML facade that invokes this same object engine. It does not make Phase 5’s REST route S3-compatible or add SigV4, presigned URLs, multipart, SDK certification, or public APIs. A separate **operator-only raw-index audit planner** for orphan leaves/retained branch pressure remains deferred and needs its own bounded manifest-revalidated concurrency/retention model.

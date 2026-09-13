@@ -204,6 +204,8 @@ npx mocha test/object-index-repair.test.js test/object-semantics.test.js test/ob
 npm test
 ```
 
-## Deliberately deferred Phase 6 recommendation
+## Historical Phase 6 recommendation (superseded by Phase 6A)
 
-Do not add S3 compatibility next. First gather operational experience with this bounded repair checkpoint. If a follow-on is justified, scope it to an **operator-only raw-index audit planner** that can identify orphan leaves/retained branch pressure in separately checkpointed, manifest-revalidated passes, with dry-run-first output and no public pointers. It needs its own concurrency and retention threat model. Keep it separate from SigV4, S3 XML, presigned URLs, multipart, SDKs, and public management features.
+This Phase 5.1 recommendation predated the separately scoped [Phase 6A S3 protocol compatibility layer](telegraph-cloud-phase-6a-s3-protocol.md). Phase 6A is deliberately limited to an administrator-only, server-configured-project `/s3/*` XML bridge over this same engine; it does not alter this repair workflow, expose index data, or add SigV4, presigned URLs, multipart, SDKs, or public management features.
+
+The raw-index audit planner recommendation remains deferred: if operational evidence justifies it, scope it as an **operator-only** audit for orphan leaves/retained branch pressure in separately checkpointed, manifest-revalidated dry-run-first passes with no public pointers. It needs its own concurrency and retention threat model and must remain separate from future SigV4 and other S3 features.
