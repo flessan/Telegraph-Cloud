@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { JSDOM } = require('jsdom');
 const { createMockKV, installFetchMock, makeContext, muteConsole } = require('./helpers');
+const { signS3Request } = require('./s3-signing');
 
 const PROJECT_ALPHA = 'prj_A1b2C3d4';
 const PROJECT_BETA = 'prj_B2c3D4e5';
@@ -14,10 +15,6 @@ function textBytes(value) {
 
 function fixedClock() {
   return new Date('2026-09-13T08:00:00.000Z');
-}
-
-function basic(user = 'admin', pass = 'secret') {
-  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
 }
 
 function parseXml(xml) {
@@ -38,12 +35,13 @@ async function runPipeline(middlewares, route, context) {
   return context.next();
 }
 
-describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
+describe('Telegraph Cloud Phase 6B S3 protocol compatibility', function () {
   let objectStorage;
   let indexModule;
   let protocol;
   let auth;
-  let session;
+  let projectModule;
+  let credentialModule;
   let s3Middleware;
   let s3Route;
   let restoreConsole;
@@ -53,7 +51,8 @@ describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
     indexModule = await import('../functions/cloud/index-store.js');
     protocol = await import('../functions/cloud/s3-protocol.js');
     auth = await import('../functions/cloud/s3-auth.js');
-    session = await import('../functions/utils/session.js');
+    projectModule = await import('../functions/cloud/project-registry.js');
+    credentialModule = await import('../functions/cloud/s3-credentials.js');
     s3Middleware = await import('../functions/s3/_middleware.js');
     s3Route = await import('../functions/s3/[[path]].js');
   });
@@ -115,6 +114,7 @@ describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
     const runtimeEnv = {
       TELEGRAPH_CLOUD_KV: kv,
       API_KEY_PEPPER: PEPPER,
+      TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER: PEPPER,
       ...env,
     };
     const index = indexModule.createCloudIndexStore(runtimeEnv);
@@ -155,56 +155,19 @@ describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
     }
   }
 
-  it('authenticates only an existing dashboard Basic/session identity and one server-configured project', async function () {
-    const env = {
-      BASIC_USER: 'admin',
-      BASIC_PASS: 'secret',
-      [auth.S3_TEST_PROJECT_ID_ENV]: PROJECT_ALPHA,
-    };
-    const withAttackerHint = new Request(`https://example.com/s3/assets?project_id=${PROJECT_BETA}`, {
-      headers: { Authorization: basic() },
-    });
-    const authenticated = await auth.authenticateS3Request(withAttackerHint, env);
-    assert.deepStrictEqual(authenticated, {
-      authentication: 's3_admin_test',
-      projectId: PROJECT_ALPHA,
-      credentials: { kind: 'dashboard_basic_or_session' },
-      permissions: { read: true, write: true },
-    });
-    assert.ok(Object.isFrozen(authenticated));
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(authenticated, 'user'), false);
-
-    const token = await session.createSession(env, 'admin');
-    const fromSession = await auth.authenticateS3Request(new Request('https://example.com/s3/assets', {
-      headers: { Cookie: `${session.SESSION_COOKIE}=${token}` },
-    }), env);
-    assert.strictEqual(fromSession.projectId, PROJECT_ALPHA);
-
+  it('retires the Phase 6A Basic/session test-project bridge before any S3 routing', async function () {
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(auth, 'S3_TEST_PROJECT_ID_ENV'), false);
+    await assert.rejects(
+      () => auth.authenticateS3Request(new Request('https://example.com/s3/assets', {
+        headers: { Authorization: 'Basic YWRtaW46c2VjcmV0' },
+      }), {}),
+      (error) => error?.s3Code === 'AuthorizationHeaderMalformed',
+    );
     await assert.rejects(
       () => auth.authenticateS3Request(new Request('https://example.com/s3/assets', {
         headers: { Authorization: 'Bearer tg_live_not_an_s3_credential' },
-      }), env),
-      (error) => error?.code === 's3_access_denied' && error.status === 401,
-    );
-    await assert.rejects(
-      () => auth.authenticateS3Request(withAttackerHint, {
-        BASIC_USER: 'admin', BASIC_PASS: 'secret',
-      }),
-      (error) => error?.code === 's3_access_denied',
-    );
-    await assert.rejects(
-      () => auth.authenticateS3Request(withAttackerHint, {
-        BASIC_USER: 'admin', BASIC_PASS: 'secret', [auth.S3_TEST_PROJECT_ID_ENV]: 'caller-selected-project',
-      }),
-      (error) => error?.code === 's3_access_denied',
-      'malformed server configuration fails closed just like a missing configuration',
-    );
-    await assert.rejects(
-      () => auth.authenticateS3Request(withAttackerHint, {
-        [auth.S3_TEST_PROJECT_ID_ENV]: PROJECT_ALPHA,
-      }),
-      (error) => error?.code === 's3_access_denied',
-      'dashboard-auth-disabled mode never activates S3',
+      }), {}),
+      (error) => error?.s3Code === 'AuthorizationHeaderMalformed',
     );
   });
 
@@ -439,20 +402,43 @@ describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
     assert.deepStrictEqual(xmlValues(parseXml(await response.text()), 'Code'), ['SlowDown']);
   });
 
-  it('mounts the Pages route behind XML auth/error middleware without accepting a query project selector', async function () {
+  it('mounts the Pages route behind verified SigV4 credential middleware without accepting a query project selector', async function () {
     const kv = createMockKV();
     const env = {
       TELEGRAPH_CLOUD_KV: kv,
       API_KEY_PEPPER: PEPPER,
-      BASIC_USER: 'admin',
-      BASIC_PASS: 'secret',
-      [auth.S3_TEST_PROJECT_ID_ENV]: PROJECT_ALPHA,
+      TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER: PEPPER,
+      TELEGRAPH_CLOUD_S3_ENDPOINT_HOST: 'example.com',
       TG_Bot_Token: '123456:route-test-token',
       TG_Chat_ID: '-100123',
     };
+    const index = indexModule.createCloudIndexStore(env);
+    const projects = projectModule.createProjectRegistry(env, {
+      index,
+      now: fixedClock,
+      createId(prefix) { return `${prefix}A1b2C3d4`; },
+    });
+    const project = await projects.createProject({ slug: 's3-route', name: 'S3 route' });
+    assert.strictEqual(project.project_id, PROJECT_ALPHA);
+    let seed = 0;
+    const credentials = credentialModule.createS3CredentialService(env, {
+      index,
+      projects,
+      now: fixedClock,
+      randomBytes(length) {
+        const bytes = new Uint8Array(length);
+        for (let offset = 0; offset < length; offset += 1) bytes[offset] = (seed + offset) & 0xff;
+        seed += 31;
+        return bytes;
+      },
+    });
+    const fullAccess = await credentials.createCredential(PROJECT_ALPHA, { label: 'route test' });
+    const readOnly = await credentials.createCredential(PROJECT_ALPHA, { scopes: ['s3:read'] });
     let sequence = 0;
     const fetchMock = installFetchMock(async (url, init) => {
-      assert.notStrictEqual(init.headers?.get?.('Authorization'), basic(), 'dashboard Basic credentials never reach Telegram');
+      const authorization = init.headers?.get?.('Authorization');
+      assert.ok(!String(authorization).includes(fullAccess.secret_access_key), 'S3 secrets never reach Telegram');
+      assert.ok(!String(authorization).includes(fullAccess.credential.access_key_id), 'S3 access-key identifiers never reach Telegram');
       const value = String(url);
       if (value.includes('/sendDocument')) {
         sequence += 1;
@@ -467,48 +453,96 @@ describe('Telegraph Cloud Phase 6A S3 protocol compatibility', function () {
       if (value.includes('/file/')) return new Response('route bytes');
       throw new Error(`Unexpected fetch ${value}`);
     });
-    const contextFor = (url, method, path, body) => makeContext({
-      request: new Request(url, {
-        method,
-        headers: { Authorization: basic(), ...(body === undefined ? {} : { 'Content-Type': 'text/plain' }) },
-        ...(body === undefined ? {} : { body }),
-      }),
-      env,
-      params: { path },
-    });
+    const currentAmzDate = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const contextFor = (url, method, body, credential = fullAccess, extraHeaders = {}) => {
+      const signedHeaders = {
+        ...(body === undefined ? {} : { 'Content-Type': 'text/plain' }),
+        ...extraHeaders,
+      };
+      return makeContext({
+        request: signS3Request({
+          url,
+          method,
+          accessKeyId: credential.credential.access_key_id,
+          secretAccessKey: credential.secret_access_key,
+          ...(body === undefined ? {} : { body }),
+          ...(Object.keys(signedHeaders).length === 0 ? {} : { headers: signedHeaders }),
+          amzDate: currentAmzDate(),
+        }),
+        env,
+        // These deliberately conflicting decoded params demonstrate the route
+        // reparses the signed received path, not route/user project data.
+        params: { path: ['other-bucket', 'other-key'] },
+        data: { projectRegistry: projects, s3Credentials: credentials },
+      });
+    };
 
     try {
       const denied = await runPipeline(s3Middleware.onRequest, s3Route, makeContext({
         request: new Request('https://example.com/s3/assets?list-type=2'),
         env,
         params: { path: ['assets'] },
+        data: { projectRegistry: projects, s3Credentials: credentials },
       }));
       assert.strictEqual(denied.status, 403);
       assert.deepStrictEqual(xmlValues(parseXml(await denied.text()), 'Code'), ['AccessDenied']);
 
+      const readOnlyWrite = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
+        'https://example.com/s3/assets/blocked.txt', 'PUT', 'never stored', readOnly,
+      ));
+      assert.strictEqual(readOnlyWrite.status, 403);
+      assert.deepStrictEqual(xmlValues(parseXml(await readOnlyWrite.text()), 'Code'), ['AccessDenied']);
+
       const write = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
-        'https://example.com/s3/assets/route.txt',
-        'PUT', ['assets', 'route.txt'], 'route bytes',
+        'https://example.com/s3/assets/route.txt', 'PUT', 'route bytes', fullAccess,
+        { 'Idempotency-Key': 's3-route-idempotency-0001' },
       ));
       assert.strictEqual(write.status, 200);
       assert.match(write.headers.get('x-amz-request-id'), /^[0-9A-F]{32}$/);
       assert.ok(kv.snapshot(`tc:v1:object-bucket:${PROJECT_ALPHA}:assets`));
+      const telegramWritesAfterInitialPut = fetchMock.calls.filter((call) => String(call.url).includes('/sendDocument')).length;
+      assert.ok(telegramWritesAfterInitialPut > 0, 'the initial put stores its immutable Telegram body/event records');
+      const retriedWrite = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
+        'https://example.com/s3/assets/route.txt', 'PUT', 'route bytes', fullAccess,
+        { 'Idempotency-Key': 's3-route-idempotency-0001' },
+      ));
+      assert.strictEqual(retriedWrite.status, 200);
+      assert.strictEqual(fetchMock.calls.filter((call) => String(call.url).includes('/sendDocument')).length, telegramWritesAfterInitialPut,
+        'the signed Idempotency-Key reaches the existing object engine rather than duplicating Telegram bytes');
 
       const attemptedSelector = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
         `https://example.com/s3/assets/other.txt?project_id=${PROJECT_BETA}`,
-        'PUT', ['assets', 'other.txt'], 'never stored',
+        'PUT', 'never stored',
       ));
       assert.strictEqual(attemptedSelector.status, 400);
       assert.deepStrictEqual(xmlValues(parseXml(await attemptedSelector.text()), 'Code'), ['InvalidRequest']);
-      assert.strictEqual(kv.snapshot(`tc:v1:object-bucket:${PROJECT_BETA}:assets`), undefined, 'query project_id cannot select or override server scope');
+      assert.strictEqual(kv.snapshot(`tc:v1:object-bucket:${PROJECT_BETA}:assets`), undefined, 'query project_id cannot select or override credential scope');
 
       const listed = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
-        'https://example.com/s3/assets?list-type=2&max-keys=1', 'GET', ['assets'], undefined,
+        'https://example.com/s3/assets?list-type=2&max-keys=1', 'GET', undefined,
       ));
       assert.strictEqual(listed.status, 200);
       assert.deepStrictEqual(xmlValues(parseXml(await listed.text()), 'Key'), ['route.txt']);
+
+      const fetched = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
+        'https://example.com/s3/assets/route.txt', 'GET', undefined, readOnly,
+      ));
+      assert.strictEqual(fetched.status, 200);
+      assert.strictEqual(await fetched.text(), 'route bytes');
+
+      const headed = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
+        'https://example.com/s3/assets/route.txt', 'HEAD', undefined, readOnly,
+      ));
+      assert.strictEqual(headed.status, 200);
+      assert.strictEqual(headed.headers.get('Content-Length'), String('route bytes'.length));
+
+      const deleted = await runPipeline(s3Middleware.onRequest, s3Route, contextFor(
+        'https://example.com/s3/assets/route.txt', 'DELETE', undefined,
+      ));
+      assert.strictEqual(deleted.status, 204);
     } finally {
       fetchMock.restore();
     }
   });
+
 });

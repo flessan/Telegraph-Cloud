@@ -16,6 +16,8 @@ describe('Telegraph Cloud validation foundations', function () {
     assert.strictEqual(validation.assertCollectionName('user_profiles-v2'), 'user_profiles-v2');
     assert.strictEqual(validation.assertDocumentId('usr_123.v2'), 'usr_123.v2');
     assert.strictEqual(validation.assertBucketName('project-assets.example'), 'project-assets.example');
+    assert.strictEqual(validation.assertS3AccessKeyId(`tgsk_live_${'a'.repeat(22)}`), `tgsk_live_${'a'.repeat(22)}`);
+    assert.strictEqual(validation.assertS3CredentialLabel('CI deploy'), 'CI deploy');
   });
 
   it('rejects ambiguous identifiers before they can become index or route paths', function () {
@@ -27,6 +29,9 @@ describe('Telegraph Cloud validation foundations', function () {
     rejects(() => validation.assertBucketName('UPPERCASE'), 'invalid_bucket_name');
     rejects(() => validation.assertBucketName('192.168.1.1'), 'invalid_bucket_name');
     rejects(() => validation.assertBucketName('bad..bucket'), 'invalid_bucket_name');
+    rejects(() => validation.assertS3AccessKeyId('tg_live_key_not_an_s3_credential'), 'invalid_s3_access_key_id');
+    rejects(() => validation.assertS3AccessKeyId(`tgsk_live_${'a'.repeat(21)}`), 'invalid_s3_access_key_id');
+    rejects(() => validation.assertS3CredentialLabel('line\nbreak'), 'invalid_s3_credential_label');
   });
 
   it('bounds opaque idempotency keys and safe equality-query components', function () {

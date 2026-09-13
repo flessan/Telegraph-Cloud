@@ -16,6 +16,9 @@ const SENSITIVE_QUERY_VALUE = /([?&](?:api[-_]?key|token|secret|password|credent
 // Developer keys are Bearer-only, but scrub an accidentally interpolated key
 // from telemetry messages/breadcrumbs as a defense in depth as well.
 const DEVELOPER_API_KEY = /\btg_live_[A-Za-z0-9_-]+\b/g;
+// SigV4 access-key IDs are not bearer secrets, but masking them keeps
+// credential identifiers and failed Authorization material out of telemetry.
+const S3_ACCESS_KEY_ID = /\btgsk_live_[A-Za-z0-9_-]+\b/g;
 const SAFE_CF_FIELDS = ['asn', 'colo', 'country', 'httpProtocol', 'tlsCipher', 'tlsVersion'];
 const SENTRY_DSN = 'https://219f636ac7bde5edab2c3e16885cb535@o4507041519108096.ingest.us.sentry.io/4507541492727808';
 
@@ -73,7 +76,9 @@ function redactObjectStoragePath(value) {
   // Object keys are application-controlled names and can accidentally contain
   // customer identifiers or opaque data. Keep the route/bucket diagnostic but
   // never send the complete Phase 4 key to telemetry.
-  return String(value).replace(/(\/api\/storage\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]');
+  return String(value)
+    .replace(/(\/api\/storage\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]')
+    .replace(/(\/s3\/[^/?#]+)\/[^?#]*/g, '$1/[object-key]');
 }
 
 export function sanitizeTelemetryUrl(value) {
@@ -93,7 +98,8 @@ export function redactSensitiveText(value) {
   return value
     .replace(TELEGRAM_BOT_PATH, '$1[redacted]')
     .replace(SENSITIVE_QUERY_VALUE, '$1[redacted]')
-    .replace(DEVELOPER_API_KEY, 'tg_live_[redacted]');
+    .replace(DEVELOPER_API_KEY, 'tg_live_[redacted]')
+    .replace(S3_ACCESS_KEY_ID, 'tgsk_live_[redacted]');
 }
 
 function safeCfContext(cf) {

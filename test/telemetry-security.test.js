@@ -46,6 +46,10 @@ describe('telemetry security boundaries', function () {
       'https://example.com/api/storage/assets/[object-key]',
     );
     assert.strictEqual(
+      middleware.sanitizeTelemetryUrl('https://s3.example.test/s3/assets/customer-secret/report.json?X-Amz-Signature=secret'),
+      'https://s3.example.test/s3/assets/[object-key]',
+    );
+    assert.strictEqual(
       middleware.redactSensitiveText(`request failed at https://api.telegram.org/bot${secret}/sendDocument?api_key=${secret}`),
       'request failed at https://api.telegram.org/bot[redacted]/sendDocument?api_key=[redacted]',
     );
@@ -61,6 +65,22 @@ describe('telemetry security boundaries', function () {
     const serialized = JSON.stringify(safe);
     assert.ok(!serialized.includes(secret), serialized);
     assert.ok(serialized.includes('tg_live_[redacted]'), serialized);
+  });
+
+  it('redacts S3 access-key identifiers and S3 object paths if application text interpolates them', function () {
+    const accessKeyId = `tgsk_live_${'a'.repeat(22)}`;
+    const safe = middleware.redactTelemetryEvent({
+      message: `SigV4 failure for ${accessKeyId}`,
+      request: {
+        url: `https://s3.example.test/s3/assets/customer-secret/file.txt?credential=${accessKeyId}`,
+        headers: { authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/20260913/us-east-1/s3/aws4_request` },
+      },
+    });
+    const serialized = JSON.stringify(safe);
+    assert.ok(!serialized.includes(accessKeyId), serialized);
+    assert.ok(serialized.includes('tgsk_live_[redacted]'), serialized);
+    assert.strictEqual(safe.request.url, 'https://s3.example.test/s3/assets/[object-key]');
+    assert.strictEqual(safe.request.headers.authorization, '[redacted]');
   });
 
   it('registers the same scrubber for Sentry error and transaction events', function () {

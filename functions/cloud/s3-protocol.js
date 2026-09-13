@@ -2,9 +2,9 @@ import {
   customMetadataFromHeaders,
   objectReadConditions,
   objectWriteInput,
-  readBoundedObjectBody,
-} from './object-http.js';
-import { resolveObjectStorageLimits } from './object-storage.js';
+} from './object-request-input.js';
+import { readBoundedObjectBody } from './bounded-body.js';
+import { resolveObjectStorageLimits } from './object-limits.js';
 import { resolveObjectListLimits } from './object-list-index.js';
 import {
   CloudConfigurationError,
@@ -18,6 +18,9 @@ import {
   utf8ByteLength,
 } from './validation.js';
 import { xmlElement, xmlResponse } from './s3-xml.js';
+import { S3ProtocolError, s3ProtocolError } from './s3-errors.js';
+import { S3_CREDENTIAL_PEPPER_ENV } from './s3-config.js';
+import { S3RequestTargetError, parseS3RawQuery } from './s3-request-target.js';
 
 export const S3_CONTINUATION_TOKEN_VERSION = 1;
 export const S3_CONTINUATION_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -38,6 +41,7 @@ const LIST_QUERY_FIELDS = new Set([
   'encoding-type',
 ]);
 const SUPPORTED_PUT_AMZ_PREFIX = 'x-amz-meta-';
+const SUPPORTED_SIGV4_AMZ_HEADERS = new Set(['x-amz-date', 'x-amz-content-sha256']);
 // StartAfter is layered over the existing cursor-only engine. A tiny bounded
 // loop avoids an empty first result for common selections without turning a
 // client-controlled lower bound into an unbounded index scan.
@@ -47,6 +51,11 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 
 const S3_ERROR_DEFINITIONS = Object.freeze({
   AccessDenied: Object.freeze({ status: 403, message: 'Access Denied.' }),
+  AuthorizationHeaderMalformed: Object.freeze({ status: 400, message: 'The authorization header is malformed.' }),
+  InvalidAccessKeyId: Object.freeze({ status: 403, message: 'The provided access key is not valid.' }),
+  SignatureDoesNotMatch: Object.freeze({ status: 403, message: 'The request signature does not match.' }),
+  RequestTimeTooSkewed: Object.freeze({ status: 403, message: 'The request time is outside the allowed window.' }),
+  XAmzContentSHA256Mismatch: Object.freeze({ status: 400, message: 'The x-amz-content-sha256 value does not match the request body.' }),
   InvalidRequest: Object.freeze({ status: 400, message: 'The request is invalid for this endpoint.' }),
   InvalidArgument: Object.freeze({ status: 400, message: 'The specified argument is not valid.' }),
   NoSuchBucket: Object.freeze({ status: 404, message: 'The specified bucket does not exist.' }),
@@ -62,20 +71,9 @@ const S3_ERROR_DEFINITIONS = Object.freeze({
   InternalError: Object.freeze({ status: 500, message: 'We encountered an internal error. Please try again.' }),
 });
 
-/** A safe protocol-only failure. Its message is always replaced by a fixed XML message. */
-export class S3ProtocolError extends Error {
-  constructor(code, { retryAfter = null, allow = null } = {}) {
-    super(code);
-    this.name = 'S3ProtocolError';
-    this.s3Code = code;
-    this.retryAfter = retryAfter;
-    this.allow = allow;
-  }
-}
-
-export function s3ProtocolError(code, options) {
-  return new S3ProtocolError(code, options);
-}
+// Preserve the established protocol-module export surface while the safe error
+// marker stays dependency-light for strict SigV4 authentication as well.
+export { S3ProtocolError, s3ProtocolError } from './s3-errors.js';
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -131,7 +129,7 @@ function safeRequestId(value) {
 function s3Headers(requestId, extraHeaders = {}) {
   const headers = new Headers({
     'Cache-Control': 'private, no-store',
-    'Vary': 'Authorization, Cookie',
+    'Vary': 'Authorization',
     'X-Content-Type-Options': 'nosniff',
     'x-amz-request-id': safeRequestId(requestId),
   });
@@ -280,7 +278,10 @@ function invalidContinuation() {
 }
 
 function continuationPepper(env) {
-  const value = env?.API_KEY_PEPPER;
+  // Phase 6B keeps all S3-only cryptographic material under a dedicated
+  // server secret rather than coupling continuation tokens to `tg_live_` key
+  // verification. Phase 6A continuation tokens are intentionally invalidated.
+  const value = env?.[S3_CREDENTIAL_PEPPER_ENV];
   if (typeof value !== 'string' || utf8ByteLength(value) < 32 || utf8ByteLength(value) > MAX_PEPPER_BYTES) {
     throw new CloudConfigurationError('s3_continuation_unavailable', 'S3 continuation tokens are unavailable.');
   }
@@ -402,19 +403,22 @@ async function decodeContinuationToken(token, { env, cryptoApi, projectId, limit
 }
 
 /**
- * Parse only the Phase 6A ListObjectsV2 controls. Unsupported query fields are
+ * Parse only the Phase 6B ListObjectsV2 controls. Unsupported query fields are
  * rejected rather than silently becoming future selectors or fake S3 options.
  */
 export function parseS3ListObjectsV2Request(request, env = {}) {
   const values = Object.create(null);
   const supplied = Object.create(null);
-  let searchParams;
+  let query;
   try {
-    searchParams = new URL(request.url).searchParams;
-  } catch (_) {
+    // Use the same raw-query parser as the SigV4 verifier. In particular `+`
+    // remains a literal plus rather than becoming form-style whitespace.
+    query = parseS3RawQuery(request);
+  } catch (error) {
+    if (error instanceof S3RequestTargetError) throw new S3ProtocolError('InvalidRequest');
     throw new S3ProtocolError('InvalidRequest');
   }
-  for (const [name, value] of searchParams.entries()) {
+  for (const { name, value } of query) {
     if (!LIST_QUERY_FIELDS.has(name) || supplied[name]) throw new S3ProtocolError('InvalidRequest');
     supplied[name] = true;
     values[name] = value;
@@ -546,22 +550,23 @@ function listResponseXml({ bucket, selection, listing, nextContinuationToken }) 
 
 function assertNoObjectQuery(request) {
   try {
-    if (Array.from(new URL(request.url).searchParams).length > 0) throw new Error('query');
+    if (parseS3RawQuery(request).length > 0) throw new Error('query');
   } catch (_) {
     throw new S3ProtocolError('InvalidRequest');
   }
 }
 
-function assertSupportedPutHeaders(request) {
+function assertSupportedS3Headers(request, { allowMetadata = false } = {}) {
   if (request.headers.has('Content-MD5')) throw new S3ProtocolError('InvalidRequest');
   for (const [rawName] of request.headers.entries()) {
     const name = rawName.toLowerCase();
-    if (name.startsWith('x-amz-') && !name.startsWith(SUPPORTED_PUT_AMZ_PREFIX)) {
-      // In particular, do not silently claim that ACLs, server-side encryption,
-      // tagging, checksums, copy-source, object-lock, or future SigV4 headers
-      // changed persistence behavior in this pre-SigV4 compatibility layer.
-      throw new S3ProtocolError('InvalidRequest');
-    }
+    if (!name.startsWith('x-amz-')) continue;
+    if (SUPPORTED_SIGV4_AMZ_HEADERS.has(name)) continue;
+    if (allowMetadata && name.startsWith(SUPPORTED_PUT_AMZ_PREFIX)) continue;
+    // Do not silently claim ACL, temporary-token, SSE, tagging, checksum,
+    // copy-source, object-lock, or future x-amz behavior. SigV4's two required
+    // headers and PUT metadata are the only x-amz request fields in this scope.
+    throw new S3ProtocolError('InvalidRequest');
   }
 }
 
@@ -596,6 +601,42 @@ export function s3TargetFromContext(context) {
   return s3TargetFromPath(context?.params?.path);
 }
 
+function invalidS3Target() {
+  return Object.freeze({ bucket: null, key: null, hasKey: false });
+}
+
+/**
+ * Parse the request-target exposed by Pages instead of trusting decoded route
+ * params. Percent-decoding occurs exactly once for later storage validation;
+ * encoded path separators are rejected so a raw URI cannot become a different
+ * object hierarchy after routing.
+ */
+export function s3TargetFromRequest(request) {
+  let pathname;
+  try {
+    pathname = new URL(request?.url).pathname;
+  } catch (_) {
+    return invalidS3Target();
+  }
+  if (pathname === '/s3' || pathname === '/s3/') return invalidS3Target();
+  if (!pathname.startsWith('/s3/')) return invalidS3Target();
+  const rawSegments = pathname.slice('/s3/'.length).split('/');
+  if (rawSegments.length === 0 || rawSegments[0] === '') return invalidS3Target();
+  const segments = [];
+  try {
+    for (const rawSegment of rawSegments) {
+      const segment = decodeURIComponent(rawSegment);
+      // Encoded `/` or `\\` must not turn one raw segment into another path
+      // segment after the signature's raw URI has already been verified.
+      if (segment.includes('/') || segment.includes('\\')) return invalidS3Target();
+      segments.push(segment);
+    }
+  } catch (_) {
+    return invalidS3Target();
+  }
+  return s3TargetFromPath(segments);
+}
+
 /** Return only an externally safe S3 resource path, never a KV/Telegram path. */
 export function safeS3Resource(target) {
   try {
@@ -610,10 +651,10 @@ export function safeS3Resource(target) {
 }
 
 export function safeS3ResourceFromContext(context) {
-  // Derive this again from the route params rather than trusting arbitrary
-  // middleware data. A future handler cannot accidentally echo an internal
-  // pointer or diagnostic by setting context.data.s3Resource.
-  return safeS3Resource(s3TargetFromContext(context));
+  // Derive this again from the received path rather than arbitrary middleware
+  // data or decoded Pages params. A future handler cannot echo an internal
+  // pointer/diagnostic by setting context.data.s3Resource.
+  return safeS3Resource(s3TargetFromRequest(context?.request));
 }
 
 /**
@@ -649,6 +690,7 @@ export function createS3ProtocolAdapter({
   }
 
   async function listObjectsV2(bucket, request) {
+    assertSupportedS3Headers(request);
     const controls = parseS3ListObjectsV2Request(request, env);
     const safeBucket = await requireExistingBucket(bucket);
     const selection = await resolveListSelection(controls, safeBucket, {
@@ -723,6 +765,7 @@ export function createS3ProtocolAdapter({
 
   async function getObject(bucket, key, request) {
     assertNoObjectQuery(request);
+    assertSupportedS3Headers(request);
     const safeBucket = assertBucketName(bucket);
     const safeKey = assertObjectKey(key);
     await requireExistingBucket(safeBucket);
@@ -732,6 +775,7 @@ export function createS3ProtocolAdapter({
 
   async function headObject(bucket, key, request) {
     assertNoObjectQuery(request);
+    assertSupportedS3Headers(request);
     const safeBucket = assertBucketName(bucket);
     const safeKey = assertObjectKey(key);
     await requireExistingBucket(safeBucket);
@@ -743,7 +787,7 @@ export function createS3ProtocolAdapter({
     assertNoObjectQuery(request);
     const safeBucket = assertBucketName(bucket);
     const safeKey = assertObjectKey(key);
-    assertSupportedPutHeaders(request);
+    assertSupportedS3Headers(request, { allowMetadata: true });
     const writeConditions = objectWriteInput(request);
     const result = await objectStorage.putObject(safeBucket, safeKey, {
       body: await readBoundedObjectBody(request, storageBodyLimits(objectStorage, env)),
@@ -752,6 +796,7 @@ export function createS3ProtocolAdapter({
       ifMatch: writeConditions.ifMatch,
       ifNoneMatch: writeConditions.ifNoneMatch,
       ifUnmodifiedSince: writeConditions.ifUnmodifiedSince,
+      idempotencyKey: writeConditions.idempotencyKey,
     });
     // Existing engine behavior materializes the bucket marker only after the
     // first successful object PUT. This is deliberately not a CreateBucket API.
@@ -760,6 +805,7 @@ export function createS3ProtocolAdapter({
 
   async function deleteObject(bucket, key, request) {
     assertNoObjectQuery(request);
+    assertSupportedS3Headers(request);
     const safeBucket = assertBucketName(bucket);
     const safeKey = assertObjectKey(key);
     await requireExistingBucket(safeBucket);
@@ -768,6 +814,7 @@ export function createS3ProtocolAdapter({
       ifMatch: writeConditions.ifMatch,
       ifNoneMatch: writeConditions.ifNoneMatch,
       ifUnmodifiedSince: writeConditions.ifUnmodifiedSince,
+      idempotencyKey: writeConditions.idempotencyKey,
     });
     return s3DeleteResponse(safeRequest);
   }
@@ -775,7 +822,7 @@ export function createS3ProtocolAdapter({
   return Object.freeze({ listObjectsV2, getObject, headObject, putObject, deleteObject });
 }
 
-/** Dispatch the limited Phase 6A route surface without adding bucket operations. */
+/** Dispatch the limited Phase 6B route surface without adding bucket operations. */
 export async function dispatchS3Request({ request, target, adapter } = {}) {
   if (!target?.bucket) throw new S3ProtocolError('InvalidRequest');
   if (!target.hasKey) {

@@ -10,6 +10,12 @@ export const CLOUD_LIMITS = Object.freeze({
   MAX_API_KEY_NAME_BYTES: 120,
   MAX_API_KEY_ID_LENGTH: 64,
   MAX_API_KEY_SCOPES: 4,
+  MAX_S3_CREDENTIAL_LABEL_BYTES: 120,
+  MAX_S3_ACCESS_KEY_ID_LENGTH: 64,
+  MAX_S3_CREDENTIAL_SCOPES: 2,
+  // A signed list token wraps a <=1 KiB KV cursor in base64url plus a 32-byte
+  // HMAC, so it has a deliberately separate bounded wire-size ceiling.
+  MAX_S3_CREDENTIAL_CURSOR_BYTES: 2 * 1024,
   MAX_COLLECTION_NAME_LENGTH: 64,
   MAX_DOCUMENT_ID_LENGTH: 128,
   MIN_BUCKET_NAME_LENGTH: 3,
@@ -49,6 +55,7 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 const PROJECT_ID_PATTERN = /^prj_[A-Za-z0-9_-]{8,48}$/;
 const PROJECT_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
 const API_KEY_ID_PATTERN = /^key_[A-Za-z0-9_-]{16,48}$/;
+const S3_ACCESS_KEY_ID_PATTERN = /^tgsk_live_[A-Za-z0-9_-]{22}$/;
 const COLLECTION_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BUCKET_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$/;
@@ -156,6 +163,26 @@ export function assertProjectName(value) {
 
 export function assertApiKeyName(value) {
   return assertDisplayText(value, 'invalid_api_key_name', 'Invalid API key name.', CLOUD_LIMITS.MAX_API_KEY_NAME_BYTES);
+}
+
+/** A non-secret display label for a dashboard-managed SigV4 credential. */
+export function assertS3CredentialLabel(value) {
+  return assertDisplayText(value, 'invalid_s3_credential_label', 'Invalid S3 credential label.', CLOUD_LIMITS.MAX_S3_CREDENTIAL_LABEL_BYTES);
+}
+
+/**
+ * S3 access-key IDs are generated server-side. Their fixed grammar makes each
+ * direct KV lookup a single safe index segment and keeps them distinct from
+ * `tg_live_…` Developer Bearer keys.
+ */
+export function assertS3AccessKeyId(value) {
+  const accessKeyId = assertString(value, 'invalid_s3_access_key_id', 'Invalid S3 access key identifier.', {
+    maxBytes: CLOUD_LIMITS.MAX_S3_ACCESS_KEY_ID_LENGTH,
+  });
+  if (!S3_ACCESS_KEY_ID_PATTERN.test(accessKeyId)) {
+    invalid('invalid_s3_access_key_id', 'Invalid S3 access key identifier.');
+  }
+  return accessKeyId;
 }
 
 export function assertApiKeyId(value) {

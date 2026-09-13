@@ -1,4 +1,10 @@
 import { createObjectStorageService } from './contracts.js';
+import { resolveObjectStorageLimits } from './object-limits.js';
+export {
+  DEFAULT_OBJECT_STORAGE_MAX_BYTES,
+  OBJECT_STORAGE_LIMIT_ENV,
+  resolveObjectStorageLimits,
+} from './object-limits.js';
 import {
   CloudAdapterError,
   CloudConfigurationError,
@@ -41,11 +47,6 @@ import {
   normalizeCustomMetadata,
 } from './validation.js';
 
-// The hard ceiling is the known Telegram getFile compatibility boundary. The
-// lower default is intentional: this adapter currently needs a bounded buffer
-// to make a SHA-256 ETag and a multipart Telegram document in one request.
-export const DEFAULT_OBJECT_STORAGE_MAX_BYTES = 10 * 1024 * 1024;
-export const OBJECT_STORAGE_LIMIT_ENV = 'TELEGRAPH_CLOUD_MAX_OBJECT_BYTES';
 export const OBJECT_MANIFEST_SCHEMA = 'telegraph-cloud.object-manifest.v1';
 export const OBJECT_REVISION_SCHEMA = 'telegraph-cloud.object-revision.v1';
 export const OBJECT_REVISION_INDEX_SCHEMA = 'telegraph-cloud.object-revision-index.v1';
@@ -461,20 +462,6 @@ async function sha256(value, cryptoApi) {
   } catch (_) {
     throw new CloudConfigurationError('object_storage_crypto_unavailable', 'Object storage hashing is unavailable.');
   }
-}
-
-function normalizeLimit(value) {
-  if (value === undefined || value === null || value === '') return DEFAULT_OBJECT_STORAGE_MAX_BYTES;
-  const parsed = typeof value === 'number' ? value : (typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > CLOUD_LIMITS.MAX_OBJECT_BYTES) {
-    throw new CloudConfigurationError('invalid_object_storage_limit', 'Object storage size limit is invalid.');
-  }
-  return parsed;
-}
-
-/** Returns the bounded request-body limit used by the current Telegram adapter. */
-export function resolveObjectStorageLimits(env = {}) {
-  return Object.freeze({ maxObjectBytes: normalizeLimit(env?.[OBJECT_STORAGE_LIMIT_ENV]) });
 }
 
 function normalizeEntityTags(value, headerName) {

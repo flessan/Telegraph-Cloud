@@ -1,13 +1,15 @@
-import { authenticateS3Request } from '../cloud/s3-auth.js';
+import { authenticateS3Request, requiredS3ScopeForMethod } from '../cloud/s3-auth.js';
+import { createProjectRegistry } from '../cloud/project-registry.js';
+import { createS3CredentialService } from '../cloud/s3-credentials.js';
+import { S3ProtocolError } from '../cloud/s3-errors.js';
 import {
-  S3ProtocolError,
   createS3RequestId,
   s3ErrorResponse,
   safeS3ResourceFromContext,
 } from '../cloud/s3-protocol.js';
 
 // This is intentionally a practical in-isolate burst guard, not billing,
-// distributed quota enforcement, or a replacement for future S3 credentials.
+// distributed quota enforcement, or a substitute for verified credentials.
 const MUTATION_WINDOW_MS = 60 * 1000;
 const MAX_MUTATIONS_PER_WINDOW = 20;
 const mutationBuckets = new Map();
@@ -25,6 +27,14 @@ function consumeMutationSlot(projectId, timestamp = Date.now()) {
   return { allowed: true };
 }
 
+function s3ServicesForContext(context) {
+  // `context.data` is an internal composition/test seam only. Browser request
+  // data never selects a credential service, project, or signing authority.
+  const projects = context.data?.projectRegistry || createProjectRegistry(context.env);
+  const credentials = context.data?.s3Credentials || createS3CredentialService(context.env, { projects });
+  return { projects, credentials };
+}
+
 /** Establish one opaque request id before auth/error handling; no credentials are logged. */
 export async function s3RequestContext(context) {
   context.data = context.data || {};
@@ -32,15 +42,33 @@ export async function s3RequestContext(context) {
   return context.next();
 }
 
-/**
- * The only Phase 6A authority path is server-configured project + existing
- * dashboard Basic/session authentication. Developer Bearer keys deliberately
- * do not become S3 credentials and no caller project hint is considered.
- */
+/** Verify header-form AWS SigV4 and derive project/scopes only from credential metadata. */
 export async function s3Authentication(context) {
-  const authentication = await authenticateS3Request(context.request, context.env);
   context.data = context.data || {};
+  const { projects, credentials } = s3ServicesForContext(context);
+  const authentication = await authenticateS3Request(context.request, context.env, {
+    projects,
+    credentials,
+  });
   context.data.s3Authentication = authentication;
+
+  // Last-use information is intentionally non-authoritative. It is stored in a
+  // separate record so an asynchronous usage write can never restore a revoked
+  // primary credential. A failed marker is not allowed to fail a valid request.
+  const usage = credentials.markUsed(authentication.accessKeyId).catch(() => {});
+  if (typeof context.waitUntil === 'function') context.waitUntil(usage);
+  return context.next();
+}
+
+/** Enforce the narrow read/write scopes only after a complete signature check. */
+export async function s3ScopeAuthorization(context) {
+  const requiredScope = requiredS3ScopeForMethod(context.request.method);
+  if (!requiredScope) return context.next();
+  const authentication = context.data?.s3Authentication;
+  if (authentication?.authentication !== 's3_sigv4' || !Array.isArray(authentication.scopes)
+    || !authentication.scopes.includes(requiredScope)) {
+    throw new S3ProtocolError('AccessDenied');
+  }
   return context.next();
 }
 
@@ -57,8 +85,8 @@ export async function s3MutationRateLimit(context) {
 
 /**
  * S3 has its own XML envelope and deliberately performs no console/Sentry
- * logging here. Request URLs, Basic/session headers, and future S3 signature
- * material must never be serialized or emitted to telemetry by this surface.
+ * logging here. Request URLs and SigV4 Authorization material must never be
+ * serialized or emitted to telemetry by this surface.
  */
 export async function s3ErrorHandling(context) {
   try {
@@ -71,4 +99,4 @@ export async function s3ErrorHandling(context) {
   }
 }
 
-export const onRequest = [s3ErrorHandling, s3RequestContext, s3Authentication, s3MutationRateLimit];
+export const onRequest = [s3ErrorHandling, s3RequestContext, s3Authentication, s3ScopeAuthorization, s3MutationRateLimit];

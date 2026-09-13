@@ -122,3 +122,12 @@ export function parseApiKeyListQuery(searchParams) {
     label: 'API key',
   });
 }
+
+/** Separate pagination controls for dashboard-only SigV4 credential metadata. */
+export function parseS3CredentialListQuery(searchParams) {
+  return parseBoundedListQuery(searchParams, {
+    queryCode: 'invalid_s3_credential_query',
+    limitCode: 'invalid_s3_credential_limit',
+    label: 'S3 credential',
+  });
+}

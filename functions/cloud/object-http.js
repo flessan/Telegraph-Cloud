@@ -1,98 +1,27 @@
 import {
   createTelegramObjectStorage,
   parseObjectListQuery,
-  resolveObjectStorageLimits,
 } from './object-storage.js';
-import { CloudRequestError, CloudUnauthorizedError, isTelegraphCloudError } from './errors.js';
+import { readBoundedObjectBody } from './bounded-body.js';
+import { resolveObjectStorageLimits } from './object-limits.js';
 import {
-  assertDeclaredContentLength,
-  normalizeCustomMetadata,
-} from './validation.js';
+  CUSTOM_METADATA_PREFIX,
+  customMetadataFromHeaders,
+  objectReadConditions,
+  objectWriteInput,
+} from './object-request-input.js';
+import { CloudUnauthorizedError } from './errors.js';
 import { jsonResponse } from '../utils/http.js';
 
-const CUSTOM_METADATA_PREFIX = 'x-amz-meta-';
-
-function contentLengthError(error) {
-  if (error?.code === 'object_too_large') {
-    throw new CloudRequestError('object_too_large', 'Object exceeds the supported size limit.', { status: 413 });
-  }
-  throw new CloudRequestError('invalid_content_length', 'Invalid Content-Length header.', { status: 400 });
-}
-
-function toUint8Array(value) {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  throw new CloudRequestError('invalid_object_body', 'Object request body is invalid.', { status: 400 });
-}
-
-/**
- * Consume a request body incrementally and stop once the configured bounded
- * object limit is exceeded. The Telegram multipart transport plus Web Crypto
- * SHA-256 still require a final bounded buffer; this function avoids an
- * unbounded request.arrayBuffer() allocation and checks declared length first.
- */
-export async function readBoundedObjectBody(request, { maxObjectBytes }) {
-  let declared;
-  try {
-    declared = assertDeclaredContentLength(request.headers.get('Content-Length'), { maxBytes: maxObjectBytes });
-  } catch (error) {
-    contentLengthError(error);
-  }
-
-  if (!request.body) {
-    if (declared !== null && declared !== 0) {
-      throw new CloudRequestError('invalid_content_length', 'Content-Length does not match the object body.', { status: 400 });
-    }
-    return new Uint8Array(0);
-  }
-
-  const reader = typeof request.body.getReader === 'function' ? request.body.getReader() : null;
-  if (!reader) {
-    throw new CloudRequestError('invalid_object_body', 'Object request body is invalid.', { status: 400 });
-  }
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = toUint8Array(value);
-      total += chunk.byteLength;
-      if (total > maxObjectBytes) {
-        try { await reader.cancel(); } catch (_) { /* best-effort stream cleanup */ }
-        throw new CloudRequestError('object_too_large', 'Object exceeds the supported size limit.', { status: 413 });
-      }
-      chunks.push(chunk);
-    }
-  } catch (error) {
-    if (isTelegraphCloudError(error)) throw error;
-    throw new CloudRequestError('invalid_object_body', 'Object request body is invalid.', { status: 400 });
-  }
-
-  if (declared !== null && declared !== total) {
-    throw new CloudRequestError('invalid_content_length', 'Content-Length does not match the object body.', { status: 400 });
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-
-export function customMetadataFromHeaders(headers) {
-  // A null-prototype collector makes dangerous bare names such as __proto__ an
-  // explicit validation error rather than a JavaScript prototype setter.
-  const metadata = Object.create(null);
-  for (const [rawName, value] of headers.entries()) {
-    const name = rawName.toLowerCase();
-    if (!name.startsWith(CUSTOM_METADATA_PREFIX)) continue;
-    metadata[name.slice(CUSTOM_METADATA_PREFIX.length)] = value;
-  }
-  return normalizeCustomMetadata(metadata);
-}
+// Keep the established object-http import surface while generic request
+// parsing remains dependency-light for the SigV4/protocol boundary.
+export { readBoundedObjectBody } from './bounded-body.js';
+export {
+  CUSTOM_METADATA_PREFIX,
+  customMetadataFromHeaders,
+  objectReadConditions,
+  objectWriteInput,
+} from './object-request-input.js';
 
 function keyFromParams(params) {
   const raw = params?.key;
@@ -215,24 +144,5 @@ export async function objectPutInput(request, env) {
     ifNoneMatch: request.headers.get('If-None-Match'),
     ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
     idempotencyKey: request.headers.get('Idempotency-Key'),
-  };
-}
-
-export function objectWriteInput(request) {
-  return {
-    ifMatch: request.headers.get('If-Match'),
-    ifNoneMatch: request.headers.get('If-None-Match'),
-    ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
-    idempotencyKey: request.headers.get('Idempotency-Key'),
-  };
-}
-
-export function objectReadConditions(request) {
-  return {
-    ifMatch: request.headers.get('If-Match'),
-    ifNoneMatch: request.headers.get('If-None-Match'),
-    ifModifiedSince: request.headers.get('If-Modified-Since'),
-    ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
-    range: request.headers.get('Range'),
   };
 }
