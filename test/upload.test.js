@@ -263,7 +263,7 @@ describe('upload function', function () {
     assert.strictEqual(img_url.snapshot(`short:${shortId}`).metadata.target, 'doc-id.txt');
   });
 
-  it('returns a clear error when Telegram responds with non-JSON text', async function () {
+  it('returns a generic safe error when Telegram responds with non-JSON text', async function () {
     const { onRequestPost } = await import('../functions/upload.js');
 
     fetchMock = installFetchMock(async input => {
@@ -286,11 +286,43 @@ describe('upload function', function () {
 
     assert.strictEqual(res.status, 500);
     assert.deepStrictEqual(JSON.parse(await res.text()), {
-      error: 'Telegram sendDocument failed: 502 error code: 502',
+      error: 'upload_failed',
     });
   });
 
-  it('returns a clear error when Telegram environment variables are missing', async function () {
+  it('never echoes or logs an upstream Telegram detail, Bot token, or chat identifier', async function () {
+    const { onRequestPost } = await import('../functions/upload.js');
+    const botToken = '123456:bot-token-that-must-not-be-logged';
+    const chatId = '-1001234567890';
+    const upstreamDetail = `request failed for https://api.telegram.org/bot${botToken}/sendDocument chat=${chatId}`;
+    const logged = [];
+    const mutedError = console.error;
+    console.error = (...args) => logged.push(args);
+    try {
+      fetchMock = installFetchMock(async () => Response.json({ ok: false, description: upstreamDetail }, { status: 502 }));
+      const request = await createUploadRequest(new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+      const res = await onRequestPost(makeContext({
+        request,
+        env: {
+          disable_telemetry: 'true',
+          TG_Bot_Token: botToken,
+          TG_Chat_ID: chatId,
+        },
+      }));
+
+      assert.strictEqual(res.status, 500);
+      assert.strictEqual(res.headers.get('Cache-Control'), 'no-store');
+      const serialized = `${await res.text()} ${JSON.stringify(logged)}`;
+      assert.strictEqual(serialized.includes(upstreamDetail), false, serialized);
+      assert.strictEqual(serialized.includes(botToken), false, serialized);
+      assert.strictEqual(serialized.includes(chatId), false, serialized);
+      assert.ok(serialized.includes('upload_failed'), serialized);
+    } finally {
+      console.error = mutedError;
+    }
+  });
+
+  it('returns a clear value-free configuration error when Telegram environment variables are missing', async function () {
     const { onRequestPost } = await import('../functions/upload.js');
     const request = await createUploadRequest(new File(['hello'], 'notes.txt', { type: 'text/plain' }));
 

@@ -16,6 +16,10 @@ English|[中文](README-zh.md)
 - [Features](#features)
 - [Optional Features Guide](#optional-features-guide): dashboard / upload protection / short links / image review / anti-hotlinking / R2 storage / site customization / whitelist mode / custom domain
 - [Upload API](#upload-api)
+- [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23)
+- [Telegraph Cloud Projects and Developer API Keys (Phase 3)](#telegraph-cloud-projects-and-developer-api-keys-phase-3)
+- [Telegraph Cloud Object Storage (Phases 4–6B)](#telegraph-cloud-object-storage-phases-46b)
+- [Production Readiness and Operations (Phase 6C)](#production-readiness-and-operations-phase-6c)
 - [Limitations and Free Quotas](#limitations-and-free-quotas)
 - [How to Update if Already Deployed?](#how-to-update-if-already-deployed)
 - [FAQ](#faq)
@@ -77,6 +81,18 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `BASIC_USER`        | `admin`                   | Login username for the dashboard (/admin). Leave unset for a dashboard without login. |
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
+| `API_KEY_PEPPER`    | `openssl rand -base64 48` | Required to create or verify Phases 3–5 `tg_live_…` developer keys and protect Phase 5/5.1 object-list/repair tokens. Use a unique random Cloudflare **Secret** of at least 32 bytes per environment. It is not a dashboard password or S3 signing secret and must never be sent to a browser, Telegram, document record, or object metadata. Replacing it invalidates existing developer keys and outstanding developer/object-list/repair tokens; follow the disruptive [pepper rotation procedure](docs/telegraph-cloud-production-readiness.md#62-emergency-rotation-api_key_pepper). |
+| `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | Optional Phase 2 database JSON-document limit in bytes (1,024–98,304; default 98,304). Kept below the Telegram journal cap for revision metadata. |
+| `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | Optional Phase 2 collection-name limit (1–64 UTF-8 bytes). |
+| `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | Optional Phase 2 record-ID limit (26–128 UTF-8 bytes). IDs are server-generated. |
+| `TELEGRAPH_CLOUD_DEFAULT_QUERY_LIMIT` | `20` | Optional default Phase 2 database page size (1–configured maximum). |
+| `TELEGRAPH_CLOUD_MAX_QUERY_LIMIT` | `100` | Optional Phase 2 database maximum page size (1–100). |
+| `TELEGRAPH_CLOUD_MAX_OBJECT_BYTES` | `10485760` | Optional Phases 4–6B object body limit in bytes (1–20,971,520; default 10 MiB). The Telegram-backed adapter uses bounded buffers for hashing/multipart upload; Phase 6B SigV4 hashes a bounded request clone before the adapter reads the original branch. The 20 MiB hard ceiling preserves practical Bot API retrieval compatibility. |
+| `TELEGRAPH_CLOUD_DEFAULT_OBJECT_LIST_LIMIT` | `50` | Optional Phase 5 default page size for `GET /api/storage/:bucket` (1–configured maximum; default 50). |
+| `TELEGRAPH_CLOUD_MAX_OBJECT_LIST_LIMIT` | `100` | Optional Phase 5 maximum list page size (1–100; default 100). Keep it bounded to preserve worker/KV work; Phase 6B S3 `max-keys` uses the same hard bound. |
+| `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER` | `openssl rand -base64 48` | **Required for Phase 6B `/s3/*`.** A distinct random Cloudflare **Secret** (32–4,096 UTF-8 bytes) that derives/verifies transient S3 credential secrets and protects S3 continuation tokens under separate domains. Never reuse or expose `API_KEY_PEPPER`; replacing this secret invalidates all S3 credentials/tokens and requires the disruptive [S3 pepper recovery procedure](docs/telegraph-cloud-production-readiness.md#63-emergency-rotation-telegraph_cloud_s3_credential_pepper). |
+| `TELEGRAPH_CLOUD_S3_ENDPOINT_HOST` | `s3.example.com` | **Required for Phase 6B `/s3/*`.** Exact public path-style host, optionally with a non-default port (for example `s3.example.com:8443`), with no scheme/path/wildcard. SigV4 `host` must match it and the actual request endpoint. |
+| `TELEGRAPH_CLOUD_S3_MAX_CLOCK_SKEW_SECONDS` | `300` | Optional Phase 6B SigV4 UTC clock window; decimal 1–900 seconds, default 300. Smaller is safer where client clocks permit. |
 | `UPLOAD_BASIC_USER` | `uploader`                | Username for protecting the public upload endpoint. Leave unset to keep uploads public. |
 | `UPLOAD_BASIC_PASS` | `strong-password`         | Password for protecting the public upload endpoint. Must be set together with `UPLOAD_BASIC_USER`. |
 | `ENABLE_SHORT_URLS` | `true`                    | When enabled (and a KV namespace is bound), uploads return a short link like `/file/AbC123` instead of the long file name. Existing long links keep working. |
@@ -99,12 +115,33 @@ Bindings (`Settings` -> `Functions`):
 | Type | Variable Name | Description |
 | ----------- | ----------- | ----------- |
 | KV namespace | `img_url` | Bind a pre-created KV namespace to enable the image management dashboard; the short links feature also requires this binding |
+| KV namespace | `TELEGRAPH_CLOUD_KV` | Dedicated Telegraph Cloud namespace for Phase 3 project/Developer-key and Phase 6B S3-credential control-plane records, Phase 2/3 document materialized indexes/outboxes, and Phases 4–6B object manifests/revision/list indexes/outboxes/internal cursor state (Phase 5.1 checkpoints and Phase 6B outer S3 tokens are stateless/encrypted, not KV records). Bind a **separate** namespace; it does not replace or read legacy `img_url`. |
 | R2 bucket | `img_r2` | Bind a pre-created R2 bucket to enable `STORAGE_PROVIDER=r2` |
 | Workers AI | `AI` | Bind Workers AI to enable the built-in image review provider |
 
+### Telegraph Cloud foundations, database, projects, and objects (Phases 1–6B)
+
+`TELEGRAPH_CLOUD_KV` is intentionally separate from legacy `img_url`. It contains Phase 3 Developer-key and Phase 6B S3-credential **control-plane** records (project registry, verifier-only metadata, revocation/listing state), the Phase 2/3 document database's repairable materialized record/collection/filter/revision/outbox state, and Phases 4–6B object manifests/revision/list indexes/outboxes/internal cursor state (Phase 5.1 checkpoints and Phase 6B outer S3 tokens are stateless/encrypted, not KV records). Telegram stores immutable document revisions plus object byte documents and immutable object events; API-key/S3-secret plaintext and control-plane secrets never go to Telegram. Do not bind `img_url` in its place, and do not expect this binding to alter existing uploads, `/file/*` links, R2 behavior, or dashboard media records.
+
+`/api/projects/*` is dashboard-administrator-only and requires both `BASIC_USER` and `BASIC_PASS` (existing HMAC dashboard session or Basic fallback). It creates opaque projects, one-time-reveal `tg_live_…` Developer keys, and dashboard-managed one-time-reveal `tgsk_live_…` S3 credentials. Neither kind is a dashboard credential. A verified `Authorization: Bearer tg_live_…` request derives one project server-side for `/api/db/*` and Bearer-only `/api/storage/*` with explicit `storage:read` / `storage:write` scopes. `/s3/*` instead requires a real header-form `AWS4-HMAC-SHA256` signature using an active S3 credential, derives its project/scopes only from verified S3 credential metadata, and never accepts Basic/session, Bearer keys, or request project hints. Configure distinct strong Cloudflare Secrets for `API_KEY_PEPPER` and `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER`. Neither surface exposes Telegram identifiers.
+
+Dashboard-only S3 credential endpoints are `POST`/`GET` `/api/projects/:id/s3-credentials`, `DELETE` `/api/projects/:id/s3-credentials/:accessKeyId`, and `POST` `/api/projects/:id/s3-credentials/:accessKeyId/rotate`. Creation and rotation reveal `secret_access_key` exactly once; list/revoke responses expose safe metadata only.
+
+See [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23), [Telegraph Cloud Object Storage (Phases 4–6B)](#telegraph-cloud-object-storage-phases-46b), the [Phase 3 projects/key reference](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md), the [Phase 4 object-engine reference](docs/telegraph-cloud-phase-4-object-storage.md), [Phase 5 listing/range reference](docs/telegraph-cloud-phase-5-object-semantics.md), [Phase 5.1 operator repair reference](docs/telegraph-cloud-phase-5-1-index-repair.md), the [Phase 6B S3 SigV4 reference](docs/telegraph-cloud-phase-6b-sigv4.md), the [historical Phase 6A migration note](docs/telegraph-cloud-phase-6a-s3-protocol.md), and the [Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+
+### Production Readiness and Operations (Phase 6C)
+
+Before enabling `/s3/*` outside an isolated test deployment, read the [Phase 6C production-readiness guide](docs/telegraph-cloud-production-readiness.md). It documents the separate Production/Preview Pages audit, exact case-sensitive variable names (`TG_Bot_Token` and `TG_Chat_ID`, not all-uppercase aliases), binding separation, eventual-consistency/recovery limits, edge-rate-control recommendations, individual credential revocation, and disruptive pepper rotation.
+
+- `GET /api/health` is a deliberately minimal public legacy-configuration signal (`{"status":"ok"}` or `{"status":"degraded"}`); it does not reveal or prove S3/KV/Telegram readiness.
+- Dashboard-authenticated `GET /api/projects/diagnostics` returns enum-only configuration/readiness states. `?probe=telegram` adds a one-shot `getMe` reachability check without returning bot/chat data; it does not prove channel/write readiness.
+- `scripts/telegraph-cloud-staged-smoke.cjs` is an explicit-confirmation, no-secret-output procedure for an authorized Preview/Production test. It creates temporary data, verifies external signed PUT/GET/HEAD/LIST/range/DELETE, isolation, inactive-project rejection, revoke/replacement, and attempts logical cleanup. It reports a known cleanup failure, but cannot promise physical Telegram deletion or recovery of an unreturned credential after a network failure.
+
+The release candidate is not production-approved merely because local tests pass: audit the exact deployed Pages commit, verify the endpoint host, and run the documented staged smoke with approved credentials. Do not place a real credential, Bot token, pepper, canonical request, signature, payload hash/body, chat ID, or raw object path in a ticket, log, shell history, or commit.
+
 ## Features
 
-1. Unlimited image storage, you can upload an unlimited number of images
+1. Self-hosted image storage with capacity and throughput determined by Telegram/R2, Cloudflare quotas, configured limits, and your own operating controls — it is not unlimited storage
 
 2. No need to purchase a server, hosted on Cloudflare's network. When usage does not exceed Cloudflare's free quota, it's completely free
 
@@ -292,6 +329,63 @@ The endpoint works with upload tools that support custom web image hosts, such a
 > [!NOTE]
 > When storing to Telegram (the default), uploads are subject to Telegram's Bot API rate limit of roughly **20 messages per minute per channel**. Batch uploads that exceed this rate will start failing with Telegram errors — space out large batches, or switch to [R2 storage](#r2-storage), which has no such limit.
 
+## Telegraph Cloud Document Database (Phases 2–3)
+
+The experimental, self-hosted `/api/db/*` surface is a **Telegram-backed document database**, not PostgreSQL, SQL-compatible storage, relational/ACID storage, a secret manager, or an unlimited-performance service. Each create/update/delete appends a complete immutable JSON revision to Telegram; `TELEGRAPH_CLOUD_KV` stores the repairable document materialization/outbox while also holding the Phase 3 project and HMAC-only key control plane.
+
+Bind `TELEGRAPH_CLOUD_KV` separately from `img_url` and configure `TG_Bot_Token` / `TG_Chat_ID`. For project-scoped developer access, create a dashboard-authenticated project/key under `/api/projects/*`, set `API_KEY_PEPPER` as a strong Cloudflare Secret, and send the resulting one-time-reveal key only as `Authorization: Bearer tg_live_…`. The server derives the project from the validated key; client project IDs do not authorize access. Existing dashboard session/Basic access remains a separate unscoped legacy mode and still requires both `BASIC_USER` / `BASIC_PASS`.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/db/:collection` | Create an arbitrary JSON-object record; the server creates `id` and version 1. |
+| `GET` | `/api/db/:collection` | List a bounded, deterministic `id:asc` page; supports cursor, limit, and bounded top-level string equality filters. |
+| `GET` | `/api/db/:collection/:id` | Read the current visible record. |
+| `PATCH` | `/api/db/:collection/:id` | Shallow partial update; requires `_expected_version` in JSON or `If-Match`. Every success appends a new immutable revision. |
+| `DELETE` | `/api/db/:collection/:id` | Version-preconditioned logical delete/tombstone; normal reads and lists then return no record. |
+
+Use an `Idempotency-Key` header on every mutation. Within its seven-day receipt window, a same-key retry of the same request returns the original logical result; reuse with a different request returns a conflict. A successful Telegram append followed by an index failure returns `503 {"error":"mutation_pending"}` instead of claiming success—retry the exact request with the same key after KV recovers.
+
+Record responses include `data`, `version`, `created_at`, and `updated_at`, plus an `ETag` carrying the quoted version. Telegram `file_id` / message identifiers, journal event identifiers, and internal index pointers never appear in API responses. This is not a secret manager: record JSON is materialized in KV as well as canonically journaled in Telegram, so do not store bot tokens, API-key secrets, passwords, or credentials in it. Documents, collection names, IDs, query pages, filters, cursors, and idempotency keys are bounded; the configurable environment limits are listed above. The detailed API examples, response shapes, mutation sequence, concurrency limitations, tombstones, query restrictions, and recovery behavior are in [the Phase 2 database reference](docs/telegraph-cloud-phase-2-document-database.md).
+
+## Telegraph Cloud Projects and Developer API Keys (Phase 3)
+
+Phase 3 adds opaque `prj_…` project boundaries and securely generated `tg_live_…` developer credentials without changing legacy image hosting or `/file/*`. Project/key management is intentionally dashboard-only:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST`, `GET` | `/api/projects` | Create/list projects. |
+| `GET`, `PATCH`, `DELETE` | `/api/projects/:id` | Read, edit, disable, or logically delete a project. |
+| `POST`, `GET` | `/api/projects/:id/keys` | Create (one-time plaintext reveal) or list safe key metadata. |
+| `DELETE` | `/api/projects/:id/keys/:keyId` | Revoke a developer key. |
+| `POST` | `/api/projects/:id/keys/:keyId/rotate` | Create a one-time-reveal replacement and revoke the old key. |
+| `POST` | `/api/projects/:id/storage/index-repair` | Phase 5.1 operator-only bounded list-index dry-run/apply repair; it never accepts a developer key. |
+
+These routes require the existing dashboard HMAC session or Basic credentials, and fail closed if both `BASIC_USER` and `BASIC_PASS` are not configured. A developer key cannot access them. The Phase 5.1 repair route scans one bounded authoritative-manifest page, returns only safe count progress plus an opaque project-bound continuation when needed, and does not expose object/Telegram/KV pointers. Allowed developer-key scopes are `db:read`, `db:write`, `storage:read`, and `storage:write`; new keys intentionally default only to the two database scopes. Keys must be sent only as `Authorization: Bearer tg_live_…`; plaintext is never shown again after create/rotate and is never stored in Telegram or KV metadata.
+
+A valid key derives a single project server-side before `/api/db/*` or `/api/storage/*` is handled. Same-named collections/records and object bucket/keys are isolated by project-scoped KV and immutable revision metadata. Missing/invalid/revoked keys return `401`; a valid key with insufficient scope or an inactive project returns `403`; caller-project absence returns `404` without cross-project disclosure. Dashboard Basic/session requests retain the old unscoped Phase 2 database namespace only; no existing data is silently assigned to a project.
+
+Read the detailed [Phase 3 projects, credentials, isolation, consistency, and migration reference](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md) before issuing keys. It includes the manual export/recreate path for legacy Phase 2 records, KV propagation/revocation limits, local-only mutation guards, and the features deliberately still out of scope.
+
+## Telegraph Cloud Object Storage (Phases 4–6B)
+
+The experimental `/api/storage/:bucket` and `/api/storage/:bucket/:key` surfaces are a **project-scoped Telegram-backed generic object engine**, not full S3/R2 compatibility, a public file host, transactional/ACID storage, or an unlimited-performance service. A storage-scoped Bearer key chooses the project; a client `project_id` hint never chooses it. Raw bytes are uploaded as Telegram documents while `TELEGRAPH_CLOUD_KV` holds small repairable manifests, staged outboxes, revision indexes, and Phase 5 list indexes; Phase 5.1 repair checkpoints and Phase 6B outer S3 continuation tokens are encrypted self-contained values rather than KV records. Existing `/upload` and `/file/*` behavior remains independent and unchanged.
+
+| Method | Route | Scope | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/storage/:bucket` | `storage:read` | List current public object metadata with bounded `prefix`, `delimiter`, `limit`, and opaque `cursor` controls. |
+| `PUT` | `/api/storage/:bucket/:key` | `storage:write` | Create/replace a bounded raw object. |
+| `GET` | `/api/storage/:bucket/:key` | `storage:read` | Fetch active object bytes privately. |
+| `HEAD` | `/api/storage/:bucket/:key` | `storage:read` | Fetch active object metadata without byte download. |
+| `DELETE` | `/api/storage/:bucket/:key` | `storage:write` | Logical tombstone; it does not promise Telegram physical deletion. |
+
+Use a key created with explicit `storage:read`/`storage:write` scopes and `Authorization: Bearer tg_live_…`. PUT accepts raw bytes, a validated `Content-Type`, bounded `X-Amz-Meta-*` custom metadata, optional `Idempotency-Key`, and standard `If-Match` / `If-None-Match` protection. GET/HEAD provide SHA-256 revision ETags, standard read conditions, and valid single byte ranges. GET on the bucket lists only current public metadata in deterministic key order. Responses are `private, no-store`, use safe attachment/nosniff headers, and never reveal Telegram file/message IDs, paths, or pointers. Default object limit is 10 MiB and the hard compatible ceiling is 20 MiB; the current adapter uses bounded buffering for SHA-256 plus Telegram multipart upload.
+
+Phase 5 adds JSON listing and one valid single HTTP byte range. Listing is eventually consistent and not a whole-bucket scan; mutation stages are at-least-once. Retry a `503 object_mutation_pending` with the same idempotency key after recovery, and do not assume physical erasure after DELETE.
+
+Phase 5.1 adds no public storage operation. Its dashboard-only `POST /api/projects/:id/storage/index-repair` scans bounded pages of authoritative manifests and can `dry_run` or `apply` deterministic missing/stale list-index-path repair (including required branch markers). It never reads object bytes or changes a manifest/revision, and its encrypted project-bound checkpoint is safe to resume but not decode client-side.
+
+Phase 6B adds a **separate `/s3/*` XML adapter** for ListObjectsV2 and object PUT/GET/HEAD/DELETE. It calls the same object facade, but requires strict header-form `AWS4-HMAC-SHA256` using a dashboard-created, one-time-secret `tgsk_live_…` S3 credential. The verifier fixes region/service to `us-east-1`/`s3`, requires signed endpoint host/date/exact payload hash, derives project and `s3:read`/`s3:write` scopes only from verified credential metadata, rejects presigned/`UNSIGNED-PAYLOAD` modes, and uses bounded skew/replay policy. Basic/session identity and `tg_live_…` Bearer keys cannot authenticate S3 requests; `TELEGRAPH_CLOUD_S3_TEST_PROJECT_ID` is obsolete. It intentionally does not add presigned URLs, multipart, bucket CRUD, ACL/policies, SDK certification, public delivery, billing, analytics, copy/tagging/checksum/SSE/object-lock APIs, or a dashboard redesign. Read the [Phase 6B SigV4 credential/security reference](docs/telegraph-cloud-phase-6b-sigv4.md) and the [historical Phase 6A migration note](docs/telegraph-cloud-phase-6a-s3-protocol.md).
+
 ## Limitations and Free Quotas
 
 1. Files are uploaded via the Telegram Bot API and stored on Telegram's servers. Uploads are limited by the Bot API (about 50MB per file), but the Bot API file download endpoint (getFile) only supports files up to 20MB, so files larger than 20MB cannot be served back after upload — treat 20MB as the practical per-file limit. Telegram also rate-limits bots to about 20 messages per minute per channel, which caps sustained upload throughput. Both limits disappear when using [R2 storage](#r2-storage) instead
@@ -365,6 +459,48 @@ The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Cont
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 13, 2026 - Telegraph Cloud Phase 6C Production Hardening
+
+- Added a minimal public `/api/health` signal, dashboard-authenticated enum-only `/api/projects/diagnostics` (including an opt-in no-detail Telegram `getMe` reachability probe), and fixed-metadata sampled operational tags. No diagnostic returns secrets, binding values, project internals, or Telegram identifiers.
+- Strengthened application telemetry scrubbing for raw dynamic resource paths, Telegram resource URLs, embedded provider spans, S3 canonical requests/string-to-sign, signatures, payload hashes/bodies, and nested automatic Sentry breadcrumb/context fields. Legacy `/upload` now uses an opaque safe error for caught provider/runtime detail instead of reflecting/logging it. `/s3/*` retains its deliberately telemetry-free XML middleware boundary.
+- Added the confirmation-gated `scripts/telegraph-cloud-staged-smoke.cjs`, local smoke-utility coverage, privacy tests, and the detailed [production-readiness/runbook](docs/telegraph-cloud-production-readiness.md): Pages Production/Preview audit, honest KV/Telegram recovery limits, edge-control recommendations, compromised-credential revocation, replacement, inactive-project behavior, and disruptive `API_KEY_PEPPER`/S3-pepper rotation.
+
+September 13, 2026 - Telegraph Cloud Phase 6B S3 SigV4 Credentials
+
+- Replaced the temporary Phase 6A dashboard-Basic/test-project `/s3/*` bypass with strict header-form `AWS4-HMAC-SHA256` verification. The fixed `us-east-1` / `s3` policy verifies canonical request URI/query/headers, endpoint host, UTC skew, and exact bounded body hash before the existing protocol adapter/object facade runs.
+- Added dashboard-only S3 credential create/list/revoke/rotate endpoints backed only by `TELEGRAPH_CLOUD_KV`: opaque random `tgsk_live_…` access IDs, one-time derived secrets, verifier/fingerprint-only persistence, direct lookup, project/scopes/status/rotation/use metadata, and no plaintext secret/Telegram storage.
+- Preserved the dedicated XML protocol mapping, bounded list/range/condition behavior, safe errors, redaction, and legacy routes; added adversarial credential/SigV4/project/scope/tamper tests and the detailed [Phase 6B SigV4 reference](docs/telegraph-cloud-phase-6b-sigv4.md). The old [Phase 6A note](docs/telegraph-cloud-phase-6a-s3-protocol.md) is historical migration context.
+
+September 13, 2026 - Telegraph Cloud Phase 5.1 Operator Object-Index Repair
+
+- Added the dashboard-authenticated-only `POST /api/projects/:id/storage/index-repair` maintenance route. It rejects developer Bearer keys and scans at most one project/bucket authoritative-manifest page per request.
+- Added `dry_run` and idempotent `apply` modes for deterministic missing/stale active index paths and retained tombstone leaves, with safe count-only status/progress and no object bytes, revision changes, Telegram IDs, raw KV keys, or pointers in output.
+- Added self-contained AES-GCM encrypted project-bound checkpoints (no dry-run KV mutation), bounded batch/input limits, retryable dependency failures, cross-project rejection, and the detailed [Phase 5.1 operating reference](docs/telegraph-cloud-phase-5-1-index-repair.md).
+
+September 13, 2026 - Telegraph Cloud Phase 5 Object Storage Semantics and Listing
+
+- Added authenticated `GET /api/storage/:bucket` JSON listing under `storage:read`, backed by a bounded repairable chunked KV index rather than Telegram ordering or bucket scans. Listings use lexicographic `key:asc` ordering, bounded limits, literal prefix filtering, slash delimiter/common-prefix grouping, and short-lived opaque HMAC-bound cursors.
+- Added valid single byte-range GET responses (`206`, exact `Content-Range`/`Content-Length`, `Accept-Ranges`) and safe `416` responses, with standard read conditional precedence before any Telegram byte retrieval. GET, HEAD, and LIST now expose consistent safe object metadata while hiding tombstones and all Telegram/KV pointers.
+- Documented migration, at-least-once repair, eventual-consistency and concurrent-mutation limits; retained Phase 4 immutable revisions, logical tombstones, legacy `/upload`/`/file/*`, and the intentional no-S3/SigV4/presigned/multipart/SDK scope.
+
+September 12, 2026 - Telegraph Cloud Phase 4 Project-scoped Object Storage
+
+- Added the Bearer-only `/api/storage/:bucket/:key` PUT/GET/HEAD/DELETE engine with explicit `storage:read`/`storage:write` scopes, project-derived isolation, bounded key/body/MIME/metadata validation, SHA-256 revision ETags, conditional requests, safe private download headers, and no Telegram pointer exposure.
+- Added a dedicated Telegram object-byte/event adapter plus repairable KV manifests, staged outboxes, immutable revision-index records, and logical tombstones. DELETE intentionally does not claim physical Telegram deletion; legacy `/upload`, `/file/*`, dashboard, Telegram/R2 providers, and public links remain unchanged.
+- Documented the 10 MiB default / 20 MiB hard limit, KV/Telegram at-least-once consistency limits, recovery retry behavior, and the deliberately deferred S3/SigV4/presigned/multipart/SDK work that Phase 5 continues to scope out.
+
+September 12, 2026 - Telegraph Cloud Phase 3 Projects and Developer API Keys
+
+- Added dashboard-only project/key control-plane APIs backed only by the dedicated `TELEGRAPH_CLOUD_KV` namespace: opaque project IDs, safe lifecycle metadata, cryptographically generated one-time `tg_live_…` key reveal, keyed-HMAC verification, revoke, and rotation.
+- Added Bearer-key-to-project database authorization with `db:read`/`db:write` scopes, project-prefixed document KV/index/outbox keys, and non-secret project metadata in immutable Telegram revisions. Existing dashboard/session/Basic database access stays separate in the unscoped legacy namespace; no data is silently migrated.
+- Added safe 401/403/project-visible 404 boundaries, telemetry defense-in-depth for accidentally interpolated developer keys, documented KV/revocation and local-rate-guard limits, and retained all legacy upload, `/file/*`, dashboard, Telegram/R2, and public-link behavior. At this Phase 3 point object/S3 routes were deferred; Phase 4 subsequently adds only the limited generic object engine, while S3 compatibility, billing, analytics, SDKs, and SQL remain out of scope.
+
+September 12, 2026 - Telegraph Cloud Phase 2 Document Database
+
+- Added the owner-only, Telegram-backed `/api/db/*` CRUD surface: immutable JSON revision documents, server-generated record IDs, current versions/ETags, tombstones, bounded cursor/equality-filter reads, optimistic concurrency, and idempotency-key retries.
+- Added the separate `TELEGRAPH_CLOUD_KV` materialized record/collection/filter/revision/outbox index. Telegram remains canonical for immutable revisions; a Telegram-success/KV-failure returns a retryable pending result rather than a false success.
+- Kept legacy upload, `/file/*`, Telegram/R2 providers, dashboard media management, albums, and public links unchanged. Projects, developer API keys, object/S3 APIs, and database dashboard panels remain future phases.
+
 August 19, 2026 - Telegraph Storage Interface Consolidation
 
 - Reorganized `/` as a concise product/about page for this customized fork, with `/admin` as the single storage workspace and `/login` as the focused GUI sign-in.

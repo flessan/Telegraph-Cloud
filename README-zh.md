@@ -16,6 +16,10 @@
 - [功能特性](#功能特性)
 - [可选功能开启指南](#可选功能开启指南)：后台管理 / 上传保护 / 短链接 / 图片审查 / 防盗链 / R2 存储 / 站点自定义 / 白名单模式 / 自定义域名
 - [API 上传](#api-上传)
+- [Telegraph Cloud 文档数据库（Phase 2–3）](#telegraph-cloud-文档数据库phase-23)
+- [Telegraph Cloud 项目与开发者 API Key（Phase 3）](#telegraph-cloud-项目与开发者-api-keyphase-3)
+- [Telegraph Cloud 对象存储（Phase 4–6B）](#telegraph-cloud-对象存储phase-46b)
+- [生产就绪与运行手册（Phase 6C）](#生产就绪与运行手册phase-6c)
 - [使用限制与免费额度](#使用限制与免费额度)
 - [已经部署了的，如何更新？](#已经部署了的如何更新)
 - [常见问题](#常见问题)
@@ -76,6 +80,19 @@
 |-----------------|---------------------------|----------------------------------------------------------------------------------------|
 | `BASIC_USER`    | `admin`                   | 后台管理页面（/admin）的登录用户名。不设置则后台无需登录。 |
 | `BASIC_PASS`    | `admin-password`          | 后台管理页面的登录密码，需要和 `BASIC_USER` 同时设置。 |
+| `SESSION_SECRET` | `long-random-string` | 可选但推荐。用于签名后台登录会话 Cookie 的密钥；未设置时会从 `BASIC_USER`/`BASIC_PASS` 稳定推导，以保证已有部署无需新增配置仍可使用。生产环境建议设置独立的随机值。 |
+| `API_KEY_PEPPER` | `openssl rand -base64 48` | Phase 3–5 创建/验证 `tg_live_…` 开发者 API Key、并保护 Phase 5.1 运维修复 checkpoint 所必需的密钥。每个环境使用至少 32 字节的独立随机 Cloudflare Secret；不是后台密码，绝不能发送到浏览器、Telegram、文档记录或对象元数据。替换它会使已有开发者 Key 和未完成的修复 checkpoint 失效；请按 [pepper 轮换流程](docs/telegraph-cloud-production-readiness.md#62-emergency-rotation-api_key_pepper) 在维护窗口处理。 |
+| `TELEGRAPH_CLOUD_MAX_DOCUMENT_BYTES` | `98304` | 可选的 Phase 2 数据库 JSON 文档字节上限（1,024–98,304，默认 98,304），为 Telegram 日志版本元数据预留空间。 |
+| `TELEGRAPH_CLOUD_MAX_COLLECTION_NAME_LENGTH` | `64` | 可选的 Phase 2 collection 名称上限（1–64 UTF-8 字节）。 |
+| `TELEGRAPH_CLOUD_MAX_RECORD_ID_LENGTH` | `128` | 可选的 Phase 2 记录 ID 上限（26–128 UTF-8 字节）；ID 由服务端生成。 |
+| `TELEGRAPH_CLOUD_DEFAULT_QUERY_LIMIT` | `20` | 可选的 Phase 2 查询默认页大小（1–配置的最大值）。 |
+| `TELEGRAPH_CLOUD_MAX_QUERY_LIMIT` | `100` | 可选的 Phase 2 查询最大页大小（1–100）。 |
+| `TELEGRAPH_CLOUD_MAX_OBJECT_BYTES` | `10485760` | 可选的 Phase 4–5 对象请求体字节上限（1–20,971,520，默认 10 MiB）。当前 Telegram 适配器为 SHA-256 与 multipart 使用有界缓冲；20 MiB 是兼顾 Bot API 实际下载兼容性的硬上限。 |
+| `TELEGRAPH_CLOUD_DEFAULT_OBJECT_LIST_LIMIT` | `50` | 可选的 Phase 5 `GET /api/storage/:bucket` 默认列表页大小（1–配置的最大值，默认 50）。 |
+| `TELEGRAPH_CLOUD_MAX_OBJECT_LIST_LIMIT` | `100` | 可选的 Phase 5 列表页最大值（1–100，默认 100），保持有界以控制 Worker/KV 工作量；Phase 6B S3 的 `max-keys` 使用同一硬上限。 |
+| `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER` | `openssl rand -base64 48` | **Phase 6B `/s3/*` 必需。** 独立随机 Cloudflare **Secret**（UTF-8 长度 32–4,096），用于瞬时派生/验证 S3 凭据 secret 并以独立域保护 S3 continuation token；不得复用或暴露 `API_KEY_PEPPER`。替换它会使全部 S3 凭据/token 失效，须按 [S3 pepper 恢复流程](docs/telegraph-cloud-production-readiness.md#63-emergency-rotation-telegraph_cloud_s3_credential_pepper) 在维护窗口重新签发。 |
+| `TELEGRAPH_CLOUD_S3_ENDPOINT_HOST` | `s3.example.com` | **Phase 6B `/s3/*` 必需。** 精确的公开 path-style host，可带非默认端口（例如 `s3.example.com:8443`）；不得带 scheme/path/wildcard。SigV4 `host` 必须同时匹配它和实际请求端点。 |
+| `TELEGRAPH_CLOUD_S3_MAX_CLOCK_SKEW_SECONDS` | `300` | 可选 Phase 6B SigV4 UTC 时钟窗口，十进制 1–900 秒，默认 300。 |
 | `UPLOAD_BASIC_USER` | `uploader`             | 上传入口的 Basic Auth 用户名。不设置则保持公开上传。 |
 | `UPLOAD_BASIC_PASS` | `strong-password`      | 上传入口的 Basic Auth 密码，需要和 `UPLOAD_BASIC_USER` 同时设置。 |
 | `ENABLE_SHORT_URLS` | `true`                 | 开启后（需绑定 KV）上传将返回形如 `/file/AbC123` 的短链接，原有长链接依然有效。 |
@@ -98,12 +115,33 @@
 | 类型 | 变量名称 | 说明 |
 | ----------- | ----------- | ----------- |
 | KV 命名空间 | `img_url` | 绑定一个提前创建好的 KV 命名空间，即可开启后台图片管理；短链接功能也依赖此绑定 |
+| KV 命名空间 | `TELEGRAPH_CLOUD_KV` | Phase 3 项目/Developer Key 与 Phase 6B S3 凭据控制平面、Phase 2/3 文档物化索引/outbox，以及 Phase 4–6B 对象 manifest/修订/列表索引/outbox（Phase 5.1 checkpoint 和 Phase 6B S3 token 本身是无状态加密 token，不写入 KV）共用的独立命名空间。请绑定**独立**命名空间；它不会替代或读取旧版 `img_url`。 |
 | R2 存储桶 | `img_r2` | 绑定一个提前创建好的 R2 存储桶，配合 `STORAGE_PROVIDER=r2` 使用 |
 | Workers AI | `AI` | 绑定 Workers AI 即可启用内置图片审查 |
 
+### Telegraph Cloud 基础设施、文档数据库、项目与对象（Phase 1–6B）
+
+`TELEGRAPH_CLOUD_KV` 与旧版 `img_url` 命名空间刻意分离。它保存 Phase 3 Developer Key 与 Phase 6B S3 凭据的**控制平面**（项目注册表、仅 verifier 的凭据元数据、撤销和列表状态）、Phase 2/3 文档数据库可修复的物化记录/collection/筛选/修订/outbox 状态，以及 Phase 4–6B 对象 manifest/修订/列表索引/outbox（Phase 5.1 checkpoint 和 Phase 6B S3 token 本身是无状态加密 token，不写入 KV）。Telegram 保存不可变文档修订及对象字节文档/不可变对象事件；API Key/S3 secret 明文和控制平面密钥绝不会写入 Telegram。不要用 `img_url` 替代它；绑定该命名空间不会改动已有上传、`/file/*` 链接、R2 行为或后台媒体记录。
+
+`/api/projects/*` 仅限后台管理员：需要同时配置 `BASIC_USER` 和 `BASIC_PASS`，并使用已有后台 HMAC 会话或 Basic Auth。它创建不透明项目、只显示一次的 `tg_live_…` Developer Key，以及后台管理、secret 只显示一次的 `tgsk_live_…` S3 凭据；两种凭据都不是后台凭据。验证通过的 `Authorization: Bearer tg_live_…` 请求只由服务端派生一个项目用于 `/api/db/*` 与只接受 Bearer 的 `/api/storage/*`（显式 `storage:read` / `storage:write` scope）。`/s3/*` 则只接受 active S3 凭据的真实 header-form `AWS4-HMAC-SHA256` 签名，仅从已验证 S3 凭据元数据派生项目/范围，绝不接受 Basic/会话、Bearer Key 或请求项目提示。请分别设置强随机 `API_KEY_PEPPER` 和 `TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER` Cloudflare Secret；这些 API 均不暴露 Telegram 标识。
+
+只限后台的 S3 credential 路由为：`POST`/`GET` `/api/projects/:id/s3-credentials`、`DELETE` `/api/projects/:id/s3-credentials/:accessKeyId`、`POST` `/api/projects/:id/s3-credentials/:accessKeyId/rotate`。创建和轮换响应仅显示一次 `secret_access_key`；列表/撤销仅输出安全元数据。
+
+请阅读下方的 [Telegraph Cloud 文档数据库（Phase 2–3）](#telegraph-cloud-文档数据库phase-23)、[Telegraph Cloud 对象存储（Phase 4–6B）](#telegraph-cloud-对象存储phase-46b)、详细英文 [Phase 3 项目与 Key 参考](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md)、[Phase 4 对象引擎参考](docs/telegraph-cloud-phase-4-object-storage.md)、[Phase 5 列表/Range 参考](docs/telegraph-cloud-phase-5-object-semantics.md)、[Phase 5.1 运维修复参考](docs/telegraph-cloud-phase-5-1-index-repair.md)、[Phase 6B S3 SigV4 凭据/安全参考](docs/telegraph-cloud-phase-6b-sigv4.md) 与 [历史 Phase 6A 迁移说明](docs/telegraph-cloud-phase-6a-s3-protocol.md)，以及 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+
+### 生产就绪与运行手册（Phase 6C）
+
+在隔离测试部署之外启用 `/s3/*` 前，请先阅读英文 [Phase 6C 生产就绪手册](docs/telegraph-cloud-production-readiness.md)。其中说明了 Production/Preview 分别审计、大小写敏感的变量名（代码读取 `TG_Bot_Token` 和 `TG_Chat_ID`，不是全大写别名）、KV 绑定隔离、KV/Telegram 一致性与恢复限制、Cloudflare 边缘限速建议、凭据撤销/替换及会中断客户端的 pepper 轮换。
+
+- `GET /api/health` 仅公开最小的旧上传配置状态（`{"status":"ok"}` 或 `{"status":"degraded"}`）；它不会泄露或证明 S3/KV/Telegram 已就绪。
+- 只有后台认证可访问的 `GET /api/projects/diagnostics` 返回枚举状态；`?probe=telegram` 只进行一次 `getMe` 可达性检查且不会返回 Bot/Chat 数据，不能证明频道权限或写入能力。
+- `scripts/telegraph-cloud-staged-smoke.cjs` 需要显式确认才会运行，且不输出 secret；它适用于已授权的 Preview/Production 临时数据测试，覆盖外部签名 PUT/GET/HEAD/LIST/range/DELETE、项目隔离、停用项目、撤销/替换，并尝试逻辑清理。它会报告已知清理失败，但不承诺物理删除 Telegram 数据，也不能在网络失败后恢复未返回的凭据。
+
+本地测试通过不等于 Production 已批准：必须确认实际 Pages commit 与 endpoint host，使用获批凭据完成手册中的 staged smoke。禁止把真实凭据、Bot token、pepper、canonical request、signature、payload hash/body、Chat ID 或原始对象路径放入工单、日志、shell 历史或提交。
+
 ## 功能特性
 
-1.无限图片储存数量，你可以上传不限数量的图片
+1.自托管图片存储的容量与吞吐取决于 Telegram/R2、Cloudflare 配额、已配置上限和自身运维控制；不承诺无限存储
 
 2.无需购买服务器，托管于 Cloudflare 的网络上，当使用量不超过 Cloudflare 的免费额度时，完全免费
 
@@ -288,6 +326,63 @@ curl -u uploader:strong-password -F "file=@/path/to/image.png" https://your.doma
 > [!NOTE]
 > 使用 Telegram 存储（默认）时，上传受 Telegram Bot API 速率限制约束：**每个频道约 20 条消息/分钟**。批量上传超过该速率时会开始收到 Telegram 报错——请控制批量上传的节奏，或改用没有此限制的 [R2 存储](#r2-存储)。
 
+## Telegraph Cloud 文档数据库（Phase 2–3）
+
+实验性的、自托管 `/api/db/*` 是**以 Telegram 为后端的文档数据库**，不是 PostgreSQL、不兼容 SQL、不是关系/ACID 存储，也不是秘密管理器或无限性能服务。每次创建、更新、删除都会向 Telegram 追加完整且不可变的 JSON 修订；`TELEGRAPH_CLOUD_KV` 保存可修复的文档物化/outbox，并保存 Phase 3 项目和仅 HMAC 的 Key 控制平面。
+
+请分别绑定 `TELEGRAPH_CLOUD_KV`（不能与 `img_url` 混用）并配置 `TG_Bot_Token`、`TG_Chat_ID`。如需项目隔离的开发者访问，请先通过后台认证的 `/api/projects/*` 创建项目/Key，将强随机 `API_KEY_PEPPER` 设置为 Cloudflare Secret，并只用 `Authorization: Bearer tg_live_…` 发送签发后仅显示一次的 Key。服务端只从验证后的 Key 派生项目，客户端项目 ID 不会授权访问。已有后台会话/Basic 访问仍是独立的、未分项目的旧数据兼容模式，且仍需要同时配置 `BASIC_USER` / `BASIC_PASS`。
+
+| 方法 | 路由 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/db/:collection` | 新建任意 JSON 对象记录；服务端生成 `id` 和版本 1。 |
+| `GET` | `/api/db/:collection` | 按稳定的 `id:asc` 分页列出记录；支持 cursor、limit 和受限的顶层字符串等值筛选。 |
+| `GET` | `/api/db/:collection/:id` | 读取当前可见记录。 |
+| `PATCH` | `/api/db/:collection/:id` | 浅层局部更新；JSON 中必须携带 `_expected_version` 或使用 `If-Match`。每次成功都会追加新的不可变修订。 |
+| `DELETE` | `/api/db/:collection/:id` | 带版本前置条件的逻辑删除/tombstone；普通读取和列表之后不再返回该记录。 |
+
+每个变更请求都强烈建议带上 `Idempotency-Key`。在七天的回执保留期内，使用同一个 key 重试同一个请求会返回原有逻辑结果；把同一个 key 用于不同请求会产生冲突。若 Telegram 追加成功但 KV 索引写入失败，接口会返回 `503 {"error":"mutation_pending"}`，不会虚报成功；在 KV 恢复后用同一 key 重试完全相同的请求。
+
+记录响应含有 `data`、`version`、`created_at`、`updated_at`，并通过 `ETag` 返回带引号的版本。Telegram 的 `file_id` / 消息标识、日志事件标识和内部索引指针绝不会出现在 API 响应里。它不是秘密管理器：记录 JSON 会同时物化在 KV 并以不可变形式写入 Telegram，因此不要存放 bot token、API Key secret、密码或其他凭据。文档、collection 名称、ID、查询页、筛选、cursor 与幂等 key 都有上限；可配置的环境变量列在上方。完整的 API 示例、返回结构、变更顺序、并发限制、tombstone、查询限制与恢复行为请参阅英文 [Phase 2 数据库参考](docs/telegraph-cloud-phase-2-document-database.md)。
+
+## Telegraph Cloud 项目与开发者 API Key（Phase 3）
+
+Phase 3 增加不透明的 `prj_…` 项目边界与安全生成的 `tg_live_…` 开发者凭据，不改变旧图床或 `/file/*`。项目/Key 管理刻意只开放给后台管理员：
+
+| 方法 | 路由 | 用途 |
+| --- | --- | --- |
+| `POST`、`GET` | `/api/projects` | 创建/列出项目。 |
+| `GET`、`PATCH`、`DELETE` | `/api/projects/:id` | 查询、修改、停用或逻辑删除项目。 |
+| `POST`、`GET` | `/api/projects/:id/keys` | 创建（明文只显示一次）或列出安全 Key 元数据。 |
+| `DELETE` | `/api/projects/:id/keys/:keyId` | 撤销开发者 Key。 |
+| `POST` | `/api/projects/:id/keys/:keyId/rotate` | 创建只显示一次的替换 Key 并撤销旧 Key。 |
+| `POST` | `/api/projects/:id/storage/index-repair` | Phase 5.1 只限运维人员的有界列表索引 dry-run/apply 修复；绝不接受开发者 Key。 |
+
+这些路由需要已有后台 HMAC 会话或 Basic 凭据；未同时配置 `BASIC_USER` 与 `BASIC_PASS` 时会安全拒绝。开发者 Key 不能访问它们。Phase 5.1 路由每次只扫描一个有界的权威 manifest 页，只返回安全计数进度和必要时不透明、项目绑定的续传 token，不输出对象/Telegram/KV 指针。允许的开发者 Key scope 为 `db:read`、`db:write`、`storage:read`、`storage:write`；新 Key 刻意只默认前两个数据库 scope。Key 只能通过 `Authorization: Bearer tg_live_…` 发送；创建/轮换响应后不再显示明文，也不会写入 Telegram 或 KV 元数据。
+
+有效 Key 在处理 `/api/db/*` 或 `/api/storage/*` 前只在服务端派生一个项目。同名 collection/记录和对象 bucket/key 都通过项目化 KV 与不可变修订元数据隔离。缺失/无效/已撤销 Key 返回 `401`；有效但 scope 不足或项目不活跃返回 `403`；调用者项目内不存在的资源返回 `404`，不会泄露其他项目。后台 Basic/会话请求只保留旧的未分项目 Phase 2 数据库命名空间，以便兼容和迁移；已有数据不会被静默分配到某个项目。
+
+签发 Key 前请阅读详细英文 [Phase 3 项目、凭据、隔离、一致性和迁移参考](docs/telegraph-cloud-phase-3-projects-and-developer-api-keys.md)。其中包括旧 Phase 2 记录的手动导出/重建路径、KV 传播/撤销限制、仅本 isolate 的变更保护，以及仍明确不在范围内的功能。
+
+## Telegraph Cloud 对象存储（Phase 4–6B）
+
+实验性的 `/api/storage/:bucket` 与 `/api/storage/:bucket/:key` 是**按项目隔离、以 Telegram 为后端的通用对象引擎**，不是完整 S3/R2 兼容层、公开文件托管、事务/ACID 存储或无限性能服务。拥有 storage scope 的 Bearer Key 决定项目；客户端 `project_id` 提示永远不能选择项目。原始字节作为 Telegram 文档上传，`TELEGRAPH_CLOUD_KV` 只保存小型、可修复的 manifest、分阶段 outbox、修订索引和 Phase 5 列表索引；Phase 5.1 修复 checkpoint 与 Phase 6B S3 continuation token 是加密、自包含 token，不作为 KV 记录。已有 `/upload` 与 `/file/*` 保持独立且完全不变。
+
+| 方法 | 路由 | Scope | 用途 |
+| --- | --- | --- | --- |
+| `GET` | `/api/storage/:bucket` | `storage:read` | 以有上限的 `prefix`、`delimiter`、`limit` 与不透明 `cursor` 控制列出当前公开对象元数据。 |
+| `PUT` | `/api/storage/:bucket/:key` | `storage:write` | 新建/替换一个有大小上限的原始对象。 |
+| `GET` | `/api/storage/:bucket/:key` | `storage:read` | 私有读取活动对象字节。 |
+| `HEAD` | `/api/storage/:bucket/:key` | `storage:read` | 只读取活动对象元数据，不下载字节内容。 |
+| `DELETE` | `/api/storage/:bucket/:key` | `storage:write` | 逻辑 tombstone；不承诺物理删除 Telegram 内容。 |
+
+请使用带有显式 `storage:read` / `storage:write` scope 的 Key，并通过 `Authorization: Bearer tg_live_…` 发送。PUT 接收原始字节、已验证 `Content-Type`、有上限的 `X-Amz-Meta-*` 自定义元数据、可选 `Idempotency-Key` 和 `If-Match` / `If-None-Match` 保护。GET/HEAD 提供基于 SHA-256 修订 ETag、标准读取条件和有效的单字节 Range；bucket 根路径的 GET 以确定性 key 顺序只列出当前公开元数据。响应为 `private, no-store`，使用安全的 attachment/nosniff 头，且绝不泄露 Telegram file/message ID、路径或内部指针。默认对象上限 10 MiB，硬上限 20 MiB；当前适配器为 SHA-256 和 Telegram multipart 使用有界缓冲。
+
+Phase 5 已增加私有 JSON 列表和一个有效的单 Range 读取。列表是最终一致且不是全 bucket 扫描，Telegram/KV 的变更阶段仍是至少一次（at-least-once）：若收到 `503 object_mutation_pending`，请在恢复后使用同一个 idempotency key 重试；DELETE 后也不能假定 Telegram 已物理擦除。
+
+Phase 5.1 没有新增公开对象操作。只限后台的 `POST /api/projects/:id/storage/index-repair` 扫描有界的权威 manifest 页，并可使用 `dry_run` 或 `apply` 修复确定性的缺失/过期列表索引路径（包括必要的分支标记）；它不读取对象字节，也不变更 manifest/修订。加密且项目绑定的 checkpoint 可安全续传，但客户端不应尝试解码。部署前请阅读英文 [Phase 5 对象列表/Range 参考](docs/telegraph-cloud-phase-5-object-semantics.md) 和 [Phase 5.1 运维修复流程、限制、重试语义与排除范围](docs/telegraph-cloud-phase-5-1-index-repair.md)。
+
+Phase 6B 新增独立 `/s3/*` XML 适配器：仅接受由后台创建、secret 只显示一次的 `tgsk_live_…` S3 凭据所签名的 header-form `AWS4-HMAC-SHA256` 请求。验证器固定 `us-east-1` / `s3`，验证 endpoint host、标准 canonical URI/query/header、UTC 时钟窗口和精确请求体 SHA-256，并仅从已验证凭据元数据派生项目与 `s3:read` / `s3:write` scope。后台 Basic/会话以及 `tg_live_…` Bearer Key 均不能访问 S3；旧 `TELEGRAPH_CLOUD_S3_TEST_PROJECT_ID` 已废弃。仅支持 path-style ListObjectsV2 与对象 PUT/GET/HEAD/DELETE；仍不实现预签名 URL、multipart、bucket CRUD、ACL/policy、SDK 认证、copy/tagging/checksum/SSE/object-lock、公开分发、计费、分析或后台重做。请阅读英文 [Phase 6B SigV4 完整参考](docs/telegraph-cloud-phase-6b-sigv4.md)。
+
 ## 使用限制与免费额度
 
 1.目前图片文件默认通过 Telegram Bot API 上传并存储于 Telegram，上传单个文件大小受 Telegram Bot API 限制（约 50MB）；但 Bot API 的文件下载接口（getFile）最大仅支持 20MB，超过 20MB 的文件上传后将无法正常加载，因此实际可用的单文件大小请以 20MB 为准。此外 Telegram 对 Bot 有每频道约 20 条消息/分钟的速率限制，会制约持续批量上传的吞吐。改用 [R2 存储](#r2-存储)后这两项限制均不存在
@@ -361,6 +456,48 @@ npm run test:e2e   # 终端 2
 Hostloc @feixiang 和@乌拉擦 提供的思路和代码
 
 ## 更新日志
+2026 年 9 月 13 日--Telegraph Cloud Phase 6C 生产加固
+
+- 新增最小公开 `/api/health`、仅后台认证的枚举状态 `/api/projects/diagnostics`（可选一次且不返回细节的 Telegram `getMe` 探测），以及只含固定元数据的采样运维标签；诊断不会输出 secret、绑定值、项目内部信息或 Telegram 标识。
+- 强化应用遥测脱敏：原始动态资源路径、Telegram 资源 URL、嵌入 provider span、S3 canonical request/string-to-sign、signature、payload hash/body 及自动 Sentry breadcrumb/context 的嵌套字段都会被删除或脱敏。旧 `/upload` 对捕获的 provider/runtime 细节改用安全 opaque 错误而不反射/记录；`/s3/*` 继续保持无应用请求遥测的 XML 中间件边界。
+- 新增需要显式确认的 `scripts/telegraph-cloud-staged-smoke.cjs`、本地 smoke 工具测试、隐私测试和完整英文 [生产就绪/运行手册](docs/telegraph-cloud-production-readiness.md)，涵盖 Production/Preview 审计、诚实的 KV/Telegram 恢复限制、边缘控制建议、泄露凭据撤销、替换、停用项目，以及会中断客户端的 `API_KEY_PEPPER`/S3 pepper 轮换。
+
+2026 年 9 月 13 日--Telegraph Cloud Phase 6B S3 SigV4 凭据
+
+- 以严格 header-form `AWS4-HMAC-SHA256` 验证替换临时 Phase 6A Basic/test-project `/s3/*` bridge；固定 `us-east-1` / `s3`，在既有 S3 XML adapter/对象引擎之前验证 canonical request、endpoint host、UTC skew 与精确有界 body hash。
+- 新增仅后台认证的 S3 credential 创建/列表/撤销/轮换路由：随机不透明 `tgsk_live_…` access ID、只显示一次的派生 secret、仅 verifier/fingerprint 的 KV 持久化、直接 lookup、项目/范围/状态/轮换/使用元数据，且绝不将明文 secret 写入 Telegram 或 KV。
+- 保留独立协议映射、范围/条件/列表边界、安全 XML 错误、遥测脱敏和全部旧路由；详细策略、迁移、replay 限制和测试见英文 [Phase 6B SigV4 参考](docs/telegraph-cloud-phase-6b-sigv4.md)。历史 [Phase 6A 说明](docs/telegraph-cloud-phase-6a-s3-protocol.md) 仅供迁移参考。
+
+2026 年 9 月 13 日--Telegraph Cloud Phase 5.1 运维对象索引修复
+
+- 新增只接受后台认证的 `POST /api/projects/:id/storage/index-repair` 维护路由：拒绝开发者 Bearer Key，每个请求最多扫描一个项目/bucket 的权威 manifest 页。
+- 新增 `dry_run` 和幂等 `apply` 模式，可处理确定性的缺失/过期活动索引路径和保留的 tombstone 叶节点；只输出安全计数状态/进度，不读取对象字节、不变更修订，也不返回 Telegram ID、原始 KV Key 或内部指针。
+- 新增自包含 AES-GCM 加密、项目绑定的 checkpoint（dry-run 不写 KV）、有界批量/输入限制、可重试依赖失败和跨项目拒绝；详细流程见英文 [Phase 5.1 运维修复参考](docs/telegraph-cloud-phase-5-1-index-repair.md)。
+
+2026 年 9 月 13 日--Telegraph Cloud Phase 5 对象存储语义与列表
+
+- 新增只接受 `storage:read` Bearer Key 的 `GET /api/storage/:bucket` JSON 列表：使用有界、可修复的分块 KV 索引，而非 Telegram 顺序或整 bucket 扫描；按 `key:asc` 排序，支持受限 `prefix`、`delimiter`/common prefixes、limit 与短期 HMAC 绑定的不透明 cursor。
+- 新增有效单字节 Range GET/HEAD（`206`、精确 `Content-Range`/`Content-Length`、`Accept-Ranges`）和安全 `416`；标准条件读取会在 Telegram 字节读取前按优先级处理。GET、HEAD、LIST 输出一致的安全对象元数据，tombstone 和 Telegram/KV 指针不会输出。
+- 记录了索引部署/迁移边界、至少一次修复、最终一致和并发变更限制；保留不可变修订、逻辑 tombstone、旧 `/upload`/`/file/*`，并继续明确排除 S3/SigV4/预签名/multipart/SDK。
+
+2026 年 9 月 12 日--Telegraph Cloud Phase 4 项目化对象存储
+
+- 新增只接受 Bearer 的 `/api/storage/:bucket/:key` PUT/GET/HEAD/DELETE 引擎：显式 `storage:read`/`storage:write` scope、由 Key 派生的项目隔离、有上限的 key/请求体/MIME/元数据验证、SHA-256 修订 ETag、条件请求、安全私有下载头，且不暴露 Telegram 指针。
+- 新增专用 Telegram 对象字节/事件适配器，以及可修复的 KV manifest、分阶段 outbox、不可变修订索引和逻辑 tombstone。DELETE 刻意不承诺物理删除 Telegram；旧 `/upload`、`/file/*`、后台、Telegram/R2 provider 和公开链接均保持不变。
+- 已说明 10 MiB 默认/20 MiB 硬上限、KV/Telegram 至少一次一致性边界、恢复重试，以及 Phase 5 继续明确排除的 S3/SigV4/预签名/multipart/SDK 工作。
+
+2026 年 9 月 12 日--Telegraph Cloud Phase 3 项目与开发者 API Key
+
+- 新增只限后台管理员的项目/Key 控制平面 API，全部使用独立 `TELEGRAPH_CLOUD_KV`：不透明项目 ID、安全生命周期元数据、密码学随机且只显示一次的 `tg_live_…` Key、带密钥 HMAC 验证、撤销与轮换。
+- 新增 Bearer Key 到项目的数据库授权、`db:read`/`db:write` scope、项目前缀的文档 KV/索引/outbox Key，以及不可变 Telegram 修订中的非秘密项目元数据。已有后台会话/Basic 数据库访问继续使用独立的未分项目旧命名空间；不会静默迁移任何数据。
+- 新增安全的 401/403/项目可见 404 边界、开发者 Key 遥测防御性脱敏，并记录 KV/撤销与本地速率保护限制；旧上传、`/file/*`、后台、Telegram/R2 和公开链接均保持不变。在当时的 Phase 3，对象/S3 路由仍被延后；随后 Phase 4 只增加受限的通用对象引擎，S3 兼容、计费、分析、SDK 和 SQL 仍不在范围内。
+
+2026 年 9 月 12 日--Telegraph Cloud Phase 2 文档数据库
+
+- 新增仅限部署所有者使用、以 Telegram 为后端的 `/api/db/*` CRUD：不可变 JSON 修订、服务端记录 ID、当前版本/ETag、tombstone、受限 cursor/等值筛选读取、乐观并发控制和 Idempotency-Key 重试。
+- 新增独立的 `TELEGRAPH_CLOUD_KV` 物化记录/collection/筛选/修订/outbox 索引。Telegram 仍是不可变修订的权威来源；Telegram 成功但 KV 失败时会返回可重试的 pending，而不会虚报成功。
+- 旧版上传、`/file/*`、Telegram/R2 provider、后台媒体管理、相册和公开链接均保持不变。项目、开发者 API Key、对象/S3 API 和数据库后台面板仍是后续阶段。
+
 2026 年 8 月 19 日--Telegraph Storage 界面整合
 
 - 将 `/` 整理为本定制分支的简洁产品介绍页，以 `/admin` 作为唯一存储工作区，并保留 `/login` 的专注图形化登录。

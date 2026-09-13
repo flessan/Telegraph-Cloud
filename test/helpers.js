@@ -33,6 +33,11 @@ function createMockKV(initial = {}) {
 
   return {
     operations,
+    async get(key) {
+      operations.get.push(key);
+      const entry = store.get(key);
+      return entry ? entry.value : null;
+    },
     async getWithMetadata(key) {
       operations.get.push(key);
       const entry = store.get(key);
@@ -41,7 +46,7 @@ function createMockKV(initial = {}) {
     },
     async put(key, value, options = {}) {
       const metadata = clone(options.metadata);
-      operations.put.push({ key, value, metadata });
+      operations.put.push({ key, value, metadata, expirationTtl: options.expirationTtl });
       store.set(key, { value, metadata });
     },
     async delete(key) {
@@ -53,7 +58,10 @@ function createMockKV(initial = {}) {
       const limit = options.limit || 1000;
       const prefix = options.prefix || '';
       const start = options.cursor ? parseInt(options.cursor, 10) : 0;
-      const names = Array.from(store.keys()).filter(key => key.startsWith(prefix));
+      // Cloudflare KV list pages are lexicographically ordered by key name.
+      // Keep the mock aligned so ordered-index pagination tests cannot depend
+      // on insertion order.
+      const names = Array.from(store.keys()).filter(key => key.startsWith(prefix)).sort();
       const keys = names.slice(start, start + limit).map(name => ({
         name,
         metadata: clone(store.get(name).metadata),

@@ -81,8 +81,10 @@ async function getLiveModels(env) {
         }
 
         return models.length ? models : null;
-    } catch (error) {
-        console.error(`Model discovery failed: ${error.message}`);
+    } catch (_) {
+        // A fetch error can include an account-scoped URL. Discovery has a
+        // static fallback, so do not expose upstream/request detail in logs.
+        console.error('Model discovery failed.');
         return null;
     }
 }
