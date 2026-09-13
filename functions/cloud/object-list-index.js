@@ -449,14 +449,24 @@ export function createObjectListIndex({
   cryptoApi = globalThis.crypto,
   readManifest,
   publicObject,
+  // The bounded repair service needs only deterministic leaf inspection and
+  // materialization. Keeping that server-only mode separate avoids inventing a
+  // fake public list reader or exposing index internals through the API.
+  maintenanceOnly = false,
 } = {}) {
   const safeProjectId = assertProjectId(projectId);
-  if (!index || typeof index.getJson !== 'function' || typeof index.putJson !== 'function'
-    || typeof index.remove !== 'function' || typeof index.list !== 'function' || typeof index.listWithSuffix !== 'function'
-    || typeof readManifest !== 'function' || typeof publicObject !== 'function' || typeof createId !== 'function') {
+  const maintenanceMode = maintenanceOnly === true;
+  const hasLeafDependencies = index && typeof index.getJson === 'function' && typeof index.putJson === 'function'
+    && typeof index.remove === 'function';
+  const hasTraversalDependencies = typeof index?.list === 'function' && typeof index?.listWithSuffix === 'function';
+  const hasListingDependencies = typeof readManifest === 'function' && typeof publicObject === 'function' && typeof createId === 'function';
+  if (!hasLeafDependencies || (!maintenanceMode && (!hasTraversalDependencies || !hasListingDependencies))) {
     throw new CloudConfigurationError('object_list_index_unavailable', 'Object listing index is not configured.');
   }
-  const limits = resolveObjectListLimits(env);
+  // Repair does not traverse list-index nodes, issue list cursors, or consume
+  // public-list configuration. Keeping maintenance leaf-only avoids coupling a
+  // recovery action to a separately invalid public list-limit configuration.
+  const limits = maintenanceMode ? null : resolveObjectListLimits(env);
 
   async function nodeIdFor(pathToken) {
     if (!pathToken) return ROOT_NODE_ID;
@@ -742,54 +752,142 @@ export function createObjectListIndex({
     return encodeCursor(cursorId, selection);
   }
 
-  async function materialize(manifest) {
-    if (assertProjectId(manifest?.project_id) !== safeProjectId) throw invalidIndex();
-    const bucket = assertBucketName(manifest?.bucket);
-    const key = assertObjectKey(manifest?.key);
-    if (!KEY_HASH_PATTERN.test(manifest?.key_hash || '')) throw invalidIndex();
-    if (manifest.state !== 'active' && manifest.state !== 'deleted') throw invalidIndex();
+  function normalizeIndexManifest(manifest) {
+    try {
+      const projectId = assertProjectId(manifest?.project_id);
+      const bucket = assertBucketName(manifest?.bucket);
+      const key = assertObjectKey(manifest?.key);
+      if (projectId !== safeProjectId || !KEY_HASH_PATTERN.test(manifest?.key_hash || '')) throw new Error('identity');
+      if (manifest.state !== 'active' && manifest.state !== 'deleted') throw new Error('state');
+      return {
+        project_id: projectId,
+        bucket,
+        key,
+        key_hash: manifest.key_hash,
+        state: manifest.state,
+        updated_at: manifest.updated_at,
+      };
+    } catch (_) {
+      throw invalidIndex();
+    }
+  }
 
-    const token = keyToken(key);
+  async function terminalLocationForManifest(manifest) {
+    const identity = normalizeIndexManifest(manifest);
+    const token = keyToken(identity.key);
     const chunks = chunksForKeyToken(token);
     let parentNodeId = ROOT_NODE_ID;
     let parentPathToken = '';
-
+    const branchLocations = [];
     for (let indexPosition = 0; indexPosition < chunks.length - 1; indexPosition += 1) {
       const chunk = chunks[indexPosition];
-      const branch = entryToken(chunk, false);
       const pathToken = `${parentPathToken}${chunk}`;
       const childNodeId = await nodeIdFor(pathToken);
-      if (manifest.state === 'active') {
-        const branchSegments = [safeProjectId, bucket, parentNodeId, branch];
+      branchLocations.push({
+        segments: [safeProjectId, identity.bucket, parentNodeId, entryToken(chunk, false)],
+        parent_node_id: parentNodeId,
+        child_node_id: childNodeId,
+      });
+      parentNodeId = childNodeId;
+      parentPathToken = pathToken;
+    }
+    return {
+      ...identity,
+      chunks,
+      branch_locations: branchLocations,
+      parent_node_id: parentNodeId,
+      parent_path_token: parentPathToken,
+      terminal_segments: [safeProjectId, identity.bucket, parentNodeId, entryToken(chunks.at(-1), true), identity.key_hash],
+    };
+  }
+
+  function terminalLeafMatches(value, location) {
+    return plainObject(value)
+      && value.schema === OBJECT_LIST_INDEX_SCHEMA
+      && value.kind === 'terminal'
+      && value.project_id === safeProjectId
+      && value.bucket === location.bucket
+      && value.node_id === location.parent_node_id
+      && value.key_hash === location.key_hash;
+  }
+
+  /**
+   * Inspect the deterministic list-index path belonging to an authoritative
+   * manifest. It never treats a leaf/branch as source data; repair callers use
+   * manifest state to decide whether a missing/stale path may be materialized
+   * or a tombstone leaf may be removed.
+   */
+  async function inspectManifest(manifest) {
+    const location = await terminalLocationForManifest(manifest);
+    if (location.state === 'active') {
+      // A terminal cannot be reached by Phase 5 traversal without every
+      // deterministic branch marker. Existing marker values are intentionally
+      // not authority data (traversal derives the child node from its path),
+      // but a missing marker is safely reconstructed from this manifest.
+      for (const branchLocation of location.branch_locations) {
+        try {
+          if (await getIndex(branchLocation.segments) === null) {
+            return Object.freeze({ status: 'missing' });
+          }
+        } catch (error) {
+          // A malformed branch value does not affect traversal and must not be
+          // blindly overwritten: another active key can share this marker.
+          // Malformed terminal values below remain safely repairable instead.
+          if (error?.code === 'cloud_index_invalid_json' || error?.code === 'cloud_index_invalid_value') continue;
+          throw error;
+        }
+      }
+    }
+
+    let leaf;
+    try {
+      leaf = await getIndex(location.terminal_segments);
+    } catch (error) {
+      // A malformed terminal value is safely repairable at this exact
+      // deterministic location. Transient KV errors remain retryable errors.
+      if (error?.code === 'cloud_index_invalid_json' || error?.code === 'cloud_index_invalid_value') {
+        return Object.freeze({ status: 'invalid' });
+      }
+      throw error;
+    }
+    if (location.state === 'deleted') {
+      return Object.freeze({ status: leaf === null ? 'deleted_absent' : 'deleted_leaf' });
+    }
+    if (leaf === null) return Object.freeze({ status: 'missing' });
+    return Object.freeze({ status: terminalLeafMatches(leaf, location) ? 'correct' : 'stale' });
+  }
+
+  async function materialize(manifest) {
+    const location = await terminalLocationForManifest(manifest);
+    const { bucket, branch_locations: branchLocations, terminal_segments: terminalSegments } = location;
+
+    for (const branchLocation of branchLocations) {
+      if (location.state === 'active') {
         // Shared branch keys are intentionally write-once. This avoids turning
         // a common key prefix into a hot KV key while still letting concurrent
         // first writers safely converge on the same deterministic child node.
-        if (await getIndex(branchSegments) === null) {
-          await putIndex(branchSegments, {
+        if (await getIndex(branchLocation.segments) === null) {
+          await putIndex(branchLocation.segments, {
             schema: OBJECT_LIST_INDEX_SCHEMA,
             kind: 'branch',
             project_id: safeProjectId,
             bucket,
-            node_id: parentNodeId,
-            child_node_id: childNodeId,
-            created_at: manifest.updated_at,
+            node_id: branchLocation.parent_node_id,
+            child_node_id: branchLocation.child_node_id,
+            created_at: location.updated_at,
           });
         }
       }
-      parentNodeId = childNodeId;
-      parentPathToken = pathToken;
     }
 
-    const terminal = entryToken(chunks.at(-1), true);
-    const terminalSegments = [safeProjectId, bucket, parentNodeId, terminal, manifest.key_hash];
-    if (manifest.state === 'active') {
+    if (location.state === 'active') {
       await putIndex(terminalSegments, {
         schema: OBJECT_LIST_INDEX_SCHEMA,
         kind: 'terminal',
         project_id: safeProjectId,
         bucket,
-        node_id: parentNodeId,
-        key_hash: manifest.key_hash,
+        node_id: location.parent_node_id,
+        key_hash: location.key_hash,
       });
       return;
     }
@@ -851,8 +949,8 @@ export function createObjectListIndex({
   }
 
   return Object.freeze({
+    inspectManifest,
     materialize,
-    listObjects,
-    limits,
+    ...(maintenanceMode ? {} : { listObjects, limits }),
   });
 }

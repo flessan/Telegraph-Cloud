@@ -321,6 +321,16 @@ function normalizeManifest(value, { allowMissingStorage = false, allowMissingEve
   }
 }
 
+/**
+ * Internal maintenance boundary: validate a stored object manifest using the
+ * exact Phase 4 schema before a bounded repair workflow may derive any list
+ * leaf from it. It intentionally returns the normalized internal value only to
+ * server-side maintenance code; HTTP responses must use publicObject instead.
+ */
+export function normalizeObjectManifestForMaintenance(value) {
+  return normalizeManifest(value);
+}
+
 function normalizeRevisionRecord(value) {
   try {
     if (!plainObject(value) || value.schema !== OBJECT_REVISION_INDEX_SCHEMA) throw new Error('schema');

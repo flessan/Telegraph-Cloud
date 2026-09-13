@@ -182,7 +182,7 @@ The Phase 4 order remains append-oriented:
 
 There is no cross-system transaction. If a failure happens after Telegram accepts a byte/event document but before the manifest/list leaf is durably confirmed, the API returns `503 object_mutation_pending`, not false success. Retry the exact PUT/DELETE with the same `Idempotency-Key` after KV recovers. A ready outbox replay repairs manifest/list materialization without duplicating an already-staged Telegram upload/event. If KV failed before an accepted Telegram pointer was recorded, Telegram retention can still contain an inaccessible duplicate: the normal at-least-once limitation remains.
 
-Phase 5 intentionally has no background scanner and no whole-bucket fallback. That keeps each normal list request bounded, but creates a deployment boundary: active Phase 4 manifests created before this list index exists may not have a leaf until a later successful mutation materializes one. Before relying on complete bucket listings of pre-Phase-5 data, plan a **bounded application-level rewrite/re-PUT** of each required object using a known expected ETag / `If-Match` policy and idempotency key. That creates a new logical revision; there is no supported direct KV editing or automatic bulk reindex in Phase 5. New and subsequently mutated objects are indexed normally.
+Phase 5 intentionally has no background scanner and no whole-bucket fallback. That keeps each normal list request bounded, but creates a deployment boundary: active Phase 4 manifests created before this list index exists may not have a leaf until a later successful mutation materializes one. Phase 5.1 now supplies a separate [dashboard-only, bounded manifest-first repair workflow](telegraph-cloud-phase-5-1-index-repair.md) for that index gap: it can dry-run and rebuild deterministic missing/stale index paths (including required branch markers) without making a new object revision. It is not part of public LIST and does not make arbitrary direct KV editing supported. An application-controlled rewrite/re-PUT remains an alternative when a new logical revision is desired; use known expected ETag / `If-Match` policy and an idempotency key.
 
 ## Consistency and concurrent mutation behavior
 
@@ -230,7 +230,7 @@ Error bodies are allowlisted codes only. Cursor payloads are HMAC-verified and s
 
 Phase 5 does not import legacy uploaded media into object storage. To migrate an authorized legacy asset deliberately: download/read it through the existing legacy path, choose a project/bucket/key and safe MIME/metadata policy, PUT it with a storage-scoped key and unique idempotency key, verify GET/HEAD and list output, then update the application reference. This does not preserve a legacy file ID/public link/provider message identity or offer physical deletion.
 
-For already-created Phase 4 objects, also account for the Phase 5 leaf-index deployment boundary described above. Do not attempt to fabricate list leaves or cursors in KV. Use an application-controlled, bounded rewrite when complete list visibility is needed, and expect the resulting logical version/ETag to advance.
+For already-created Phase 4 objects, also account for the Phase 5 leaf-index deployment boundary described above. Do not fabricate list leaves or cursors in KV. Prefer the [Phase 5.1 operator-only repair workflow](telegraph-cloud-phase-5-1-index-repair.md) to inspect/rebuild deterministic leaves from current manifests without changing object revisions. Use an application-controlled, bounded rewrite only when a new logical version/ETag is intentionally desired.
 
 ## Verification included
 
@@ -252,6 +252,8 @@ npm test
 
 A Pages/Wrangler smoke should also verify that the Functions router starts with a KV binding, that `GET /api/storage/:bucket` receives the Bearer-only `storage:read` boundary, and that legacy `/file/*` still responds through its unchanged path.
 
-## Deliberately scoped Phase 6 recommendation
+## Phase 5.1 repair and deliberately scoped Phase 6 direction
 
-Before considering any S3 protocol work, implement a narrowly scoped **operator-only, checkpointed list-index repair/reindex workflow**. It should process one authenticated project/bucket in bounded pages, read manifests only (never object bytes), write only missing/stale leaves, have an explicit dry-run and progress/error record, respect KV propagation/write limits, and avoid exposing internal pointers in its output. Keep it separate from public APIs and do not combine it with SigV4, presigned URLs, S3 XML, multipart state, or an SDK. That closes the pre-Phase-5 migration gap while preserving the bounded, repairable architecture.
+The former pre-Phase-5 migration recommendation is now delivered as [Phase 5.1](telegraph-cloud-phase-5-1-index-repair.md): a dashboard-authenticated, project-bound, checkpointed manifest scan with dry-run/apply modes, bounded pages, safe count-only progress, retryable dependency failures, and deterministic index-path/terminal-leaf repair/removal. It does not read bytes, create revisions, expose pointers, or expand `/api/storage/*`.
+
+Before considering any S3 protocol work, first gather operational experience with that repair checkpoint. If follow-on work is justified, scope it to a separate **operator-only raw-index audit planner** for reporting orphan leaves/retained branch pressure in bounded, manifest-revalidated passes. It must retain dry-run-first behavior and have its own concurrency/retention threat model. Do not combine it with SigV4, presigned URLs, S3 XML, multipart state, an SDK, or public APIs.
