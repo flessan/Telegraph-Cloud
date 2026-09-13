@@ -5,7 +5,7 @@
  * Deliberately opt-in, destructive-in-a-bounded-way release smoke for a
  * separately authorized staging/production Pages deployment. It creates two
  * temporary Telegraph Cloud projects and immutable Telegram-backed test data.
- * Cleanup attempts to tombstone a known test object, revokes known credentials,
+ * Cleanup attempts to tombstone known test objects, revokes known credentials,
  * and logically deletes known projects, but cannot promise physical Telegram/KV
  * erasure or recovery of an unreturned credential after a network failure.
  *
@@ -266,8 +266,7 @@ async function deleteProject(state, project, step = 'delete-project') {
   project.deleted = true;
 }
 
-async function bestEffortDeleteObject(state) {
-  const object = state.object;
+async function bestEffortDeleteObject(state, object) {
   if (!object?.mayExist || object.deleted) return true;
   // Prefer the most recently issued still-known active credential. A failed
   // rotate response can leave an unreturned replacement secret, in which case
@@ -302,7 +301,10 @@ async function bestEffortCleanup(state) {
   // Do not echo errors from cleanup; a provider error can contain sensitive
   // request information. A failed cleanup is signalled by the final generic
   // result and must be inspected through authenticated control-plane metadata.
-  let complete = await bestEffortDeleteObject(state);
+  let complete = true;
+  for (const object of state.objects) {
+    if (!await bestEffortDeleteObject(state, object)) complete = false;
+  }
   for (const credential of state.credentials) {
     try {
       await revokeCredential(state, credential, 'cleanup-revoke-credential');
@@ -336,16 +338,29 @@ async function main() {
   const suffix = randomBytes(8).toString('hex');
   const bucket = `phase6c${suffix.slice(0, 12)}`;
   const key = `release-smoke-${suffix}.txt`;
+  const isolationKey = `isolation-marker-${suffix}.txt`;
   const objectPath = `/s3/${bucket}/${key}`;
+  const isolationObjectPath = `/s3/${bucket}/${isolationKey}`;
   const listPath = `/s3/${bucket}?list-type=2`;
   const payload = Buffer.from('phase6c-staged-smoke-payload', 'utf8');
-  state.object = {
+  const primaryObject = {
     path: objectPath,
     project: null,
     cleanupIdempotencyKey: `phase6c-${suffix}-cleanup-delete`,
     mayExist: false,
     deleted: false,
   };
+  // This materializes the same bucket name only inside the isolated project.
+  // It makes the following cross-project GET a true key-isolation assertion
+  // (`NoSuchKey`) rather than a weaker missing-bucket assertion.
+  const isolationObject = {
+    path: isolationObjectPath,
+    project: null,
+    cleanupIdempotencyKey: `phase6c-${suffix}-isolation-cleanup-delete`,
+    mayExist: false,
+    deleted: false,
+  };
+  state.objects = [primaryObject, isolationObject];
 
   let cleanupComplete = false;
   try {
@@ -368,8 +383,8 @@ async function main() {
 
     // Mark before the request because a timeout can still leave an immutable
     // Telegram-backed object pending/visible; cleanup should attempt a tombstone.
-    state.object.project = primaryProject;
-    state.object.mayExist = true;
+    primaryObject.project = primaryProject;
+    primaryObject.mayExist = true;
     await s3Request(state, primary, objectPath, {
       method: 'PUT',
       body: payload,
@@ -402,11 +417,36 @@ async function main() {
     });
     report('verified signed PUT GET HEAD range and list');
 
+    // Materialize the same bucket name only in the isolated project before
+    // testing its read of the primary key. This verifies a project boundary at
+    // the object-key layer without relying on a missing-bucket shortcut.
+    isolationObject.project = isolatedProject;
+    isolationObject.mayExist = true;
+    await s3Request(state, isolated, isolationObjectPath, {
+      method: 'PUT',
+      body: payload,
+      headers: {
+        'content-type': 'text/plain',
+        'idempotency-key': `phase6c-${suffix}-isolation-put`,
+      },
+      expectedStatus: 200,
+      step: 'isolation-marker-put',
+    });
     await s3Request(state, isolated, objectPath, {
       expectedStatus: 404,
       expectedXmlCode: 'NoSuchKey',
       step: 'cross-project-non-visibility',
     });
+    // Delete the marker while the second project is still active. If any
+    // preceding request failed, the finally cleanup makes the same bounded
+    // tombstone attempt using known credentials.
+    await s3Request(state, isolated, isolationObjectPath, {
+      method: 'DELETE',
+      headers: { 'idempotency-key': `phase6c-${suffix}-isolation-delete` },
+      expectedStatus: 204,
+      step: 'isolation-marker-delete',
+    });
+    isolationObject.deleted = true;
     await controlRequest(state, `/api/projects/${encodeURIComponent(isolatedProject.id)}`, {
       method: 'PATCH',
       body: { status: 'disabled' },
@@ -439,7 +479,7 @@ async function main() {
       expectedStatus: 204,
       step: 'signed-delete',
     });
-    state.object.deleted = true;
+    primaryObject.deleted = true;
     await s3Request(state, replacement, objectPath, {
       expectedStatus: 404,
       expectedXmlCode: 'NoSuchKey',

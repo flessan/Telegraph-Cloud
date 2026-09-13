@@ -22,9 +22,14 @@ function xml(response, status, code) {
   response.end(`<Error><Code>${code}</Code></Error>`);
 }
 
-function startMockPages({ failAfterPut = false } = {}) {
+function startMockPages({ failAfterPut = false, failDuringIsolation = false } = {}) {
   const observed = new Set();
-  const state = { rotated: false, replacementRevoked: false, isolatedDisabled: false, objectDeleted: false };
+  const state = {
+    rotated: false,
+    replacementRevoked: false,
+    isolatedDisabled: false,
+    primaryObjectDeleted: false,
+  };
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
     request.resume();
@@ -89,6 +94,8 @@ function startMockPages({ failAfterPut = false } = {}) {
       assert.ok(request.headers['x-amz-content-sha256'], 'the staged smoke must sign a payload hash');
       const accessKey = accessKeyMatch[1];
       const isList = url.searchParams.get('list-type') === '2';
+      const isPrimaryObject = url.pathname.includes('/release-smoke-');
+      const isIsolationMarker = url.pathname.includes('/isolation-marker-');
 
       if (accessKey === PRIMARY_ACCESS_KEY && state.rotated) {
         observed.add('rotated-rejection');
@@ -99,6 +106,24 @@ function startMockPages({ failAfterPut = false } = {}) {
           observed.add('inactive-rejection');
           return xml(response, 403, 'AccessDenied');
         }
+        if (request.method === 'PUT' && isIsolationMarker) {
+          observed.add('isolation-marker-put');
+          response.writeHead(200);
+          return response.end();
+        }
+        if (request.method === 'DELETE' && isIsolationMarker) {
+          observed.add(request.headers['idempotency-key']?.includes('isolation-cleanup-delete')
+            ? 'cleanup-isolation-delete'
+            : 'isolation-marker-delete');
+          response.writeHead(204);
+          return response.end();
+        }
+        assert.ok(request.method === 'GET' && isPrimaryObject, 'unexpected isolated-project request');
+        if (failDuringIsolation) {
+          observed.add('forced-isolation-failure');
+          response.writeHead(500);
+          return response.end();
+        }
         observed.add('cross-project');
         return xml(response, 404, 'NoSuchKey');
       }
@@ -107,6 +132,7 @@ function startMockPages({ failAfterPut = false } = {}) {
         return xml(response, 403, 'InvalidAccessKeyId');
       }
       assert.ok(accessKey === PRIMARY_ACCESS_KEY || accessKey === REPLACEMENT_ACCESS_KEY, 'unexpected credential');
+      assert.ok(isPrimaryObject || isList, 'unexpected primary-project object');
 
       if (request.method === 'PUT') {
         observed.add('put');
@@ -115,7 +141,7 @@ function startMockPages({ failAfterPut = false } = {}) {
       }
       if (request.method === 'DELETE') {
         observed.add(request.headers['idempotency-key']?.includes('cleanup-delete') ? 'cleanup-delete' : 'delete');
-        state.objectDeleted = true;
+        state.primaryObjectDeleted = true;
         response.writeHead(204);
         return response.end();
       }
@@ -124,7 +150,7 @@ function startMockPages({ failAfterPut = false } = {}) {
         response.writeHead(500);
         return response.end();
       }
-      if (state.objectDeleted && !isList) {
+      if (state.primaryObjectDeleted && !isList) {
         observed.add('post-delete');
         return xml(response, 404, 'NoSuchKey');
       }
@@ -211,8 +237,9 @@ describe('Phase 6C staged production smoke utility', function () {
       for (const step of [
         'health', 'diagnostics', 'telegram-diagnostics',
         'primary-project', 'isolated-project', 'primary-credential', 'isolated-credential',
-        'put', 'get', 'head', 'range', 'list', 'cross-project', 'disable-project', 'inactive-rejection',
-        'rotate', 'rotated-rejection', 'delete', 'post-delete', 'explicit-revoke', 'revoked-rejection',
+        'put', 'get', 'head', 'range', 'list', 'isolation-marker-put', 'cross-project', 'isolation-marker-delete',
+        'disable-project', 'inactive-rejection', 'rotate', 'rotated-rejection', 'delete', 'post-delete',
+        'explicit-revoke', 'revoked-rejection',
         'delete-prj_primary', 'delete-prj_isolated',
       ]) {
         assert.ok(observed.has(step), `missing staged smoke step: ${step}`);
@@ -243,6 +270,33 @@ describe('Phase 6C staged production smoke utility', function () {
         'delete-prj_primary', 'delete-prj_isolated',
       ]) {
         assert.ok(observed.has(step), `missing failure-cleanup step: ${step}; observed=${[...observed].join(',')}`);
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('tombstones the same-bucket isolation marker during failure cleanup', async function () {
+    const { server, observed, baseUrl } = await startMockPages({ failDuringIsolation: true });
+    try {
+      const result = await runSmoke({
+        ...process.env,
+        TELEGRAPH_CLOUD_SMOKE_CONFIRM: 'I_UNDERSTAND_THIS_WRITES_TELEGRAM',
+        TELEGRAPH_CLOUD_SMOKE_BASE_URL: baseUrl,
+        TELEGRAPH_CLOUD_SMOKE_DASHBOARD_USER: 'operator',
+        TELEGRAPH_CLOUD_SMOKE_DASHBOARD_PASS: 'dashboard-password',
+      });
+      assert.strictEqual(result.code, 1);
+      assert.strictEqual(result.stdout.includes('passed; credentials were revoked'), false);
+      assert.strictEqual(result.stderr, '[phase6c] staged smoke failed; inspect authenticated operator diagnostics and protected logs.\n');
+      for (const forbidden of [PRIMARY_SECRET, ISOLATED_SECRET, 'dashboard-password', PAYLOAD]) {
+        assert.ok(!`${result.stdout}${result.stderr}`.includes(forbidden), result.stdout);
+      }
+      for (const step of [
+        'put', 'isolation-marker-put', 'forced-isolation-failure', 'cleanup-delete', 'cleanup-isolation-delete',
+        'delete-prj_primary', 'delete-prj_isolated',
+      ]) {
+        assert.ok(observed.has(step), `missing isolation-cleanup step: ${step}; observed=${[...observed].join(',')}`);
       }
     } finally {
       await new Promise((resolve) => server.close(resolve));

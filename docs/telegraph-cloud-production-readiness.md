@@ -159,7 +159,7 @@ Set `disable_telemetry=true` to disable the application’s remote telemetry int
 The checked-in `scripts/telegraph-cloud-staged-smoke.cjs` is the exact procedure used after an authorized deployment. It is intentionally **not** an npm script and refuses to run until its explicit confirmation variable is set.
 
 > [!CAUTION]
-> This smoke creates two temporary projects, one-time S3 credentials, and a small Telegram-backed immutable test object/event sequence. Its cleanup attempts to tombstone any known test object, revokes known credentials, and logically deletes known projects. A timeout during create/rotate can still leave unreturned credential metadata that the script cannot recover; inspect/revoke safe metadata manually. Telegram/KV history or retained immutable bytes may remain; cleanup is not a physical-erasure promise. Run it only in a designated test project/channel or after an explicit Production change approval.
+> This smoke creates two temporary projects, one-time S3 credentials, and two small Telegram-backed immutable test object/event sequences (the primary object and a same-bucket isolation marker). Its cleanup attempts to tombstone any known test objects, revokes known credentials, and logically deletes known projects. A timeout during create/rotate can still leave unreturned credential metadata that the script cannot recover; inspect/revoke safe metadata manually. Telegram/KV history or retained immutable bytes may remain; cleanup is not a physical-erasure promise. Run it only in a designated test project/channel or after an explicit Production change approval.
 
 ### Preconditions
 
@@ -184,12 +184,12 @@ The tool prints fixed step names only. It never prints a project ID, access key,
 | Public/minimal health and authenticated diagnostics | Health returns `ok`; both readiness gates return `ready_for_smoke`; active Telegram probe says `reachable`. |
 | Project and credential issuance | Two temporary dashboard-managed projects and one-time S3 credentials are created. No credential value is printed. |
 | Primary signed object flow | Header-form SigV4 `PUT`, `GET`, `HEAD`, single-byte `Range`, and `ListObjectsV2` succeed using fixed region `us-east-1`, service `s3`, and exact payload hashes. |
-| Cross-project non-visibility | A second valid project credential requesting the first project’s same bucket/key receives `404 NoSuchKey`, never the first project’s bytes. |
+| Cross-project non-visibility | The utility first materializes and tombstones a tiny marker in the second project’s same-named bucket. That project’s valid credential requesting the first project’s bucket/key then receives `404 NoSuchKey`, never the first project’s bytes. |
 | Inactive project behavior | The second temporary project is disabled and its otherwise-valid S3 request receives `403 AccessDenied`. |
 | Planned replacement | Dashboard rotation creates a replacement; the old credential receives `403 InvalidAccessKeyId`, and the replacement successfully reads the first project object. |
 | Logical deletion | The replacement signs `DELETE`; a following request receives `404 NoSuchKey`. This is not a physical Telegram deletion assertion. |
 | Compromised-credential revocation | The replacement is explicitly revoked; its otherwise-valid signed request receives `403 InvalidAccessKeyId`. |
-| Cleanup | The utility attempts a logical tombstone before revoking known test credentials and logically deleting the temporary projects. It reports success only if its known cleanup completed; unknown network outcomes may still leave unreturned active metadata, so see [Section 7](#7-unknown-outcomes-and-recovery). |
+| Cleanup | The utility attempts logical tombstones for known test objects before revoking known credentials and logically deleting the temporary projects. It reports success only if its known cleanup completed; unknown network outcomes may still leave unreturned active metadata, so see [Section 7](#7-unknown-outcomes-and-recovery). |
 
 The smoke utility has a local HTTP-double test in `test/staged-production-smoke.test.js`. That test verifies the sequence and verifies that fixture access keys, secrets, payload, signature marker, and dashboard password do not appear in process output. It is not a substitute for the authorized remote smoke.
 
