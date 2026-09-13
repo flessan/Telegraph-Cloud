@@ -15,7 +15,7 @@ Phase 4 adds a small, authenticated **generic object API** beside the existing T
 - a repairable KV current manifest, immutable revision-index records, staged mutation outboxes, Telegram byte documents, and Telegram immutable revision/tombstone events;
 - logical tombstones rather than a false promise that Telegram bytes/messages were physically erased.
 
-It deliberately does **not** implement S3 XML routes, `ListObjectsV2`, bucket-management routes, AWS Signature V4, presigned URLs, multipart upload, byte ranges, AWS SDK compatibility, billing/analytics, a storage dashboard redesign, SDKs, public-object delivery, lifecycle rules, cross-region transactions, or globally exact rate limits. The existing internal `listObjects` contract method returns `501 object_listing_not_available`; it is not a hidden listing API.
+At the end of Phase 4, it deliberately deferred S3 XML routes, `ListObjectsV2`, bucket-management routes, AWS Signature V4, presigned URLs, multipart upload, ranges, AWS SDK compatibility, billing/analytics, a storage dashboard redesign, SDKs, public-object delivery, lifecycle rules, cross-region transactions, and globally exact rate limits. **Phase 5 supersedes the former listing/range deferral** with a private JSON `GET /api/storage/:bucket` list endpoint and valid single-byte-range reads over this same engine. S3 XML/ListObjectsV2 XML, SigV4, presigned URLs, multipart upload/ranges, SDK compatibility, and the other exclusions remain out of scope. See the [Phase 5 object semantics and listing reference](telegraph-cloud-phase-5-object-semantics.md).
 
 ## Architecture and authority boundary
 
@@ -80,7 +80,7 @@ All object responses use `Cache-Control: private, no-store` and `Vary: Authoriza
 | `HEAD` | `/api/storage/:bucket/:key` | `storage:read` | Retrieve active metadata without downloading byte content. |
 | `DELETE` | `/api/storage/:bucket/:key` | `storage:write` | Create a logical tombstone. |
 
-Keys may contain safe slash hierarchy, so `:key` can be `reports/2026/summary.json`. There is no list route in this phase.
+Keys may contain safe slash hierarchy, so `:key` can be `reports/2026/summary.json`. Phase 5 adds the separate authenticated bucket-root `GET /api/storage/:bucket` JSON listing route; it is documented in the [Phase 5 reference](telegraph-cloud-phase-5-object-semantics.md), not an S3/ListObjectsV2 endpoint.
 
 ### PUT an object
 
@@ -143,7 +143,7 @@ curl -D - 'https://your-domain.example/api/storage/assets/reports/summary.txt' \
 - `If-None-Match` supports `*` or quoted ETag lists (weak tags are accepted for GET/HEAD matching).
 - If it is absent, `If-Modified-Since` is evaluated at HTTP-date second precision; an invalid date is ignored according to normal HTTP behavior.
 - A matching condition returns `304` with safe cache/version/metadata headers and no Telegram byte download.
-- `Range` is intentionally rejected with `416 range_not_supported`; partial/range semantics are deferred.
+- Phase 5 evaluates `If-Match` / `If-Unmodified-Since` before `If-None-Match` / `If-Modified-Since`, then processes a valid single `Range`. A satisfiable range returns `206` with exact `Content-Range`, `Content-Length`, and `Accept-Ranges`; malformed/multipart/unsatisfiable ranges return safe `416 range_not_satisfiable` with `Content-Range: bytes */<size>`. See the [Phase 5 range and conditional precedence](telegraph-cloud-phase-5-object-semantics.md#conditional-precedence).
 
 ### Conditional replacement and delete
 
@@ -159,7 +159,7 @@ curl -X DELETE 'https://your-domain.example/api/storage/assets/reports/summary.t
   -H 'If-Match: "sha256-Base64urlSha256Digest-v2"'
 ```
 
-`If-Match` uses strong matching against a current active ETag. `If-None-Match: *` only permits a missing/tombstoned object. Invalid or combined `If-Match` + `If-None-Match` headers return `400 invalid_precondition`; a condition that does not match returns `412 precondition_failed` before a new Telegram byte document is uploaded.
+`If-Match` uses strong matching against a current active ETag. `If-None-Match: *` only permits a missing/tombstoned object. Invalid or combined `If-Match` + `If-None-Match` headers return `400 invalid_precondition`; a condition that does not match returns `412 precondition_failed` before a new Telegram byte document is uploaded. Phase 5 also accepts `If-Unmodified-Since` on PUT/DELETE; `If-Match` takes precedence when both are sent. Full precedence and range interaction are documented in the [Phase 5 reference](telegraph-cloud-phase-5-object-semantics.md#conditional-precedence).
 
 DELETE returns a safe tombstone confirmation:
 
@@ -175,7 +175,7 @@ DELETE returns a safe tombstone confirmation:
 }
 ```
 
-After a successful tombstone, normal `GET`, `HEAD`, a new DELETE request, and any future list semantics treat the object as absent (`404 object_not_found`). A same-`Idempotency-Key` DELETE retry instead returns its original logical deletion receipt, as documented above. A later PUT can recreate it as a new active revision.
+After a successful tombstone, normal `GET`, `HEAD`, `LIST`, and a new DELETE request treat the object as absent (`404 object_not_found` for direct access). A same-`Idempotency-Key` DELETE retry instead returns its original logical deletion receipt, as documented above. A later PUT can recreate it as a new active revision; Phase 5 lists only that current active representation, not tombstones or historical revisions.
 
 ## Validation and safe limits
 
@@ -202,7 +202,7 @@ For each active/tombstoned object, the current KV manifest stores only bounded m
 - internal Telegram pointer for the current immutable byte document; and
 - internal Telegram pointer for the corresponding immutable object revision/tombstone event.
 
-The manifest KV key uses `project/bucket/SHA-256-key-token`, not the arbitrary object key as a KV segment. A separate immutable KV revision-index entry retains each staged event/byte pointer, and a small mutation outbox stores state such as `intent`, `uploaded`, `ready`, and `applied`. Bucket markers are created by the first active PUT; there is no bucket create/delete/list API yet. Object bodies are never placed in KV or event/outbox payloads and never appear in public responses.
+The manifest KV key uses `project/bucket/SHA-256-key-token`, not the arbitrary object key as a KV segment. A separate immutable KV revision-index entry retains each staged event/byte pointer, and a small mutation outbox stores state such as `intent`, `uploaded`, `ready`, and `applied`. Bucket markers are created by the first active PUT; Phase 5 adds a read-only bucket-root object-list API, not bucket administration. Its bounded chunked leaf index is secondary to the current manifest and is documented in the [Phase 5 reference](telegraph-cloud-phase-5-object-semantics.md#index-architecture-and-bounded-work). Object bodies are never placed in KV or event/outbox payloads and never appear in public responses.
 
 A successful PUT follows this sequence:
 
@@ -210,7 +210,7 @@ A successful PUT follows this sequence:
 2. Write a small mutation intent to KV.
 3. Upload immutable raw bytes through Telegram `sendDocument` and durably stage its internal pointer in the outbox.
 4. Append a small immutable Telegram JSON revision event that references the internal byte pointer; stage its event pointer.
-5. Persist the immutable KV revision-index record, materialize the active manifest and bucket marker, then mark the outbox applied.
+5. Persist the immutable KV revision-index record and materialize the active manifest/bucket marker. Phase 5 then materializes or removes the bounded list-index terminal leaf before the outbox is marked applied; a same-idempotency-key retry repairs this materialization stage.
 
 A DELETE writes an intent, appends an immutable Telegram tombstone event, persists its revision-index record, and materializes a `deleted` manifest. It deliberately does **not** call Telegram `deleteMessage`; replacing/deleting an object can leave historical byte documents and event documents retained by Telegram. The API makes them inaccessible through this object engine but does not claim physical erasure or a provider retention guarantee.
 
@@ -237,7 +237,7 @@ Cloudflare KV is eventually consistent and has no compare-and-swap/transaction. 
 | Invalid bucket/key/body/header/metadata | bounded `400`/`422` response such as `invalid_object_key` |
 | Body exceeds limit | `413 {"error":"object_too_large"}` |
 | Unsupported MIME | `415 {"error":"unsupported_media_type"}` |
-| Range request | `416 {"error":"range_not_supported"}` |
+| Invalid/unsatisfiable or multipart range request (Phase 5) | `416 {"error":"range_not_satisfiable"}` plus safe `Accept-Ranges: bytes` / `Content-Range: bytes */<size>` |
 | Conditional mutation did not match | `412 {"error":"precondition_failed"}` |
 | Concurrent/idempotency conflict | `409 object_conflict` or `idempotency_key_reused` |
 | Telegram/KV stage unavailable | safe `503 storage_backend_failure` or `object_mutation_pending` |
@@ -260,6 +260,8 @@ Run before deployment:
 npm test
 ```
 
-## Recommended Phase 5 direction
+## Phase 5 follow-on and deliberately scoped Phase 6 direction
 
-Build Phase 5 **over this engine**, not by routing S3 traffic into legacy `/upload` or exposing Telegram pointers. Start with a deliberately designed bounded listing/index model and range support, then decide whether an S3-shaped JSON/XML surface, SigV4, presigned authorization, multipart state machine, and SDK compatibility can be implemented safely. Each feature needs separate threat modeling, canonical-request tests, pagination/consistency semantics, quota/abuse controls, and migration/version guarantees; none is implied by Phase 4.
+Phase 5 was built **over this engine**, not by routing S3 traffic into legacy `/upload` or exposing Telegram pointers. It provides a bounded listing/index model and valid single ranges; see [its dedicated reference](telegraph-cloud-phase-5-object-semantics.md).
+
+The next recommended step is not S3 protocol compatibility. It is a narrow operator-only, checkpointed list-index repair/reindex workflow for pre-Phase-5 manifests: bounded pages, dry-run/progress reporting, manifest-only reads, missing/stale leaf repair, and no public pointer exposure. SigV4, presigned authorization, S3 XML, multipart state, and SDK compatibility each need separate threat modeling and must remain separate future decisions.

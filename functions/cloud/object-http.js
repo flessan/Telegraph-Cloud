@@ -1,4 +1,8 @@
-import { createTelegramObjectStorage, resolveObjectStorageLimits } from './object-storage.js';
+import {
+  createTelegramObjectStorage,
+  parseObjectListQuery,
+  resolveObjectStorageLimits,
+} from './object-storage.js';
 import { CloudRequestError, CloudUnauthorizedError, isTelegraphCloudError } from './errors.js';
 import {
   assertDeclaredContentLength,
@@ -96,6 +100,12 @@ function keyFromParams(params) {
   return raw;
 }
 
+/** True only for the object route, never for GET /api/storage/:bucket listing. */
+export function objectKeyWasProvided(context) {
+  const raw = context?.params?.key;
+  return (typeof raw === 'string' && raw.length > 0) || (Array.isArray(raw) && raw.length > 0);
+}
+
 /** Extract only the route bucket/key; no query/header project selector exists. */
 export function objectLocationFromContext(context) {
   return { bucket: context?.params?.bucket, key: keyFromParams(context?.params) };
@@ -123,7 +133,7 @@ function safeLastModified(timestamp) {
   return date.toUTCString();
 }
 
-function baseObjectHeaders(object, { representation = false } = {}) {
+function baseObjectHeaders(object, { representation = false, range = null } = {}) {
   const headers = new Headers({
     'Cache-Control': 'private, no-store',
     'ETag': quotedEtag(object.etag),
@@ -131,13 +141,15 @@ function baseObjectHeaders(object, { representation = false } = {}) {
     'Vary': 'Authorization',
     'X-Content-Type-Options': 'nosniff',
     'X-Telegraph-Cloud-Object-Version': String(object.version),
+    'Accept-Ranges': 'bytes',
   });
   for (const [name, value] of Object.entries(object.metadata)) {
     headers.set(`${CUSTOM_METADATA_PREFIX}${name}`, value);
   }
   if (representation) {
     headers.set('Content-Type', object.content_type);
-    headers.set('Content-Length', String(object.size));
+    headers.set('Content-Length', String(range ? range.length : object.size));
+    if (range) headers.set('Content-Range', `bytes ${range.start}-${range.end}/${range.size}`);
     // A fixed safe filename avoids treating a user-controlled key as a header
     // filename or serving executable uploaded content inline at this origin.
     headers.set('Content-Disposition', 'attachment; filename="download"');
@@ -146,10 +158,13 @@ function baseObjectHeaders(object, { representation = false } = {}) {
 }
 
 export function objectReadResponse(result, { method = 'GET' } = {}) {
-  const headers = baseObjectHeaders(result.object, { representation: result.status === 200 });
+  const headers = baseObjectHeaders(result.object, {
+    representation: result.status === 200 || result.status === 206,
+    range: result.range || null,
+  });
   if (result.status === 304) return new Response(null, { status: 304, headers });
-  if (method === 'HEAD') return new Response(null, { status: 200, headers });
-  return new Response(result.body || null, { status: 200, headers });
+  if (method === 'HEAD') return new Response(null, { status: result.status, headers });
+  return new Response(result.body || null, { status: result.status, headers });
 }
 
 export function objectPutResponse(result) {
@@ -166,17 +181,24 @@ export function objectDeleteResponse(result) {
   return jsonResponse({ data: result.deletion }, { status: result.status, headers });
 }
 
-export function ensureRangeIsNotRequested(request) {
-  if (request.headers.has('Range')) {
-    throw new CloudRequestError('range_not_supported', 'Range requests are not available for object storage yet.', { status: 416 });
-  }
+export function objectListResponse(result) {
+  return jsonResponse(result, {
+    headers: {
+      'Cache-Control': 'private, no-store',
+      'Vary': 'Authorization',
+    },
+  });
 }
 
-export function methodNotAllowedResponse() {
+export function objectListQueryForRequest(request, env) {
+  return parseObjectListQuery(new URL(request.url).searchParams, env);
+}
+
+export function methodNotAllowedResponse(allow = 'GET, HEAD, PUT, DELETE') {
   return jsonResponse({ error: 'method_not_allowed' }, {
     status: 405,
     headers: {
-      'Allow': 'GET, HEAD, PUT, DELETE',
+      Allow: allow,
       'Cache-Control': 'no-store',
     },
   });
@@ -191,6 +213,7 @@ export async function objectPutInput(request, env) {
     metadata: customMetadataFromHeaders(request.headers),
     ifMatch: request.headers.get('If-Match'),
     ifNoneMatch: request.headers.get('If-None-Match'),
+    ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
     idempotencyKey: request.headers.get('Idempotency-Key'),
   };
 }
@@ -199,13 +222,17 @@ export function objectWriteInput(request) {
   return {
     ifMatch: request.headers.get('If-Match'),
     ifNoneMatch: request.headers.get('If-None-Match'),
+    ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
     idempotencyKey: request.headers.get('Idempotency-Key'),
   };
 }
 
 export function objectReadConditions(request) {
   return {
+    ifMatch: request.headers.get('If-Match'),
     ifNoneMatch: request.headers.get('If-None-Match'),
     ifModifiedSince: request.headers.get('If-Modified-Since'),
+    ifUnmodifiedSince: request.headers.get('If-Unmodified-Since'),
+    range: request.headers.get('Range'),
   };
 }

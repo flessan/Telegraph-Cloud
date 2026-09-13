@@ -65,9 +65,18 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
         const fileId = `event${String(++sequence).padStart(15, '0')}`;
         return { provider: 'telegram-object-event', fileId, messageId: sequence };
       },
-      async getObject(pointer) {
-        calls.get.push({ ...pointer });
-        return new Response(bytes.get(pointer.fileId));
+      async getObject(pointer, { range = null } = {}) {
+        calls.get.push({ ...pointer, ...(range ? { range: { ...range } } : {}) });
+        const stored = bytes.get(pointer.fileId);
+        if (!range) return new Response(stored);
+        const body = stored.slice(range.start, range.end + 1);
+        return new Response(body, {
+          status: 206,
+          headers: {
+            'Content-Range': `bytes ${range.start}-${range.end}/${range.size}`,
+            'Content-Length': String(body.byteLength),
+          },
+        });
       },
       async headObject(pointer) {
         calls.head.push({ ...pointer });
@@ -138,10 +147,9 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
     assert.strictEqual(transport.calls.get.length, beforeHeadDownloads, 'HEAD never asks the byte transport to download');
     assert.strictEqual(transport.calls.head.length, 1);
 
-    await assert.rejects(
-      () => storage.listObjects(),
-      (error) => error && error.status === 501 && error.code === 'object_listing_not_available',
-    );
+    const emptyBucket = await storage.listObjects('unused-assets');
+    assert.deepStrictEqual(emptyBucket.objects, []);
+    assert.strictEqual(emptyBucket.has_more, false);
   });
 
   it('overwrites with revision ETags and applies conditional PUT protections before Telegram upload', async function () {
@@ -352,7 +360,13 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
       },
       async getFilePath(fileId) { calls.push({ type: 'path', fileId }); return 'documents/object.bin'; },
       getFileDownloadUrl(path) { calls.push({ type: 'url', path }); return 'https://telegram.invalid/object'; },
-      async fetchDownload(url, request) { calls.push({ type: 'download', url, method: request.method, authorization: request.headers.get('Authorization') }); return new Response('body'); },
+      async fetchDownload(url, request) {
+        calls.push({
+          type: 'download', url, method: request.method,
+          authorization: request.headers.get('Authorization'), range: request.headers.get('Range'),
+        });
+        return new Response('body');
+      },
     };
     const adapter = objectTransport.createTelegramObjectStorageAdapter({ TG_Chat_ID: '42' }, { client });
     const pointer = await adapter.putObject({ body: textBytes('body'), contentType: 'text/plain' });
@@ -370,7 +384,13 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
 
     await adapter.getObject(pointer);
     const download = calls.at(-1);
-    assert.deepStrictEqual(download, { type: 'download', url: 'https://telegram.invalid/object', method: 'GET', authorization: null });
+    assert.deepStrictEqual(download, {
+      type: 'download', url: 'https://telegram.invalid/object', method: 'GET', authorization: null, range: null,
+    });
+    await adapter.getObject(pointer, { range: { start: 1, end: 2, size: 4 } });
+    assert.deepStrictEqual(calls.at(-1), {
+      type: 'download', url: 'https://telegram.invalid/object', method: 'GET', authorization: null, range: 'bytes=1-2',
+    });
     const downloadCount = calls.filter((call) => call.type === 'download').length;
     await adapter.headObject(pointer);
     assert.strictEqual(calls.filter((call) => call.type === 'download').length, downloadCount, 'transport HEAD does not download');
@@ -426,7 +446,15 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
       if (url.includes('getFile')) {
         return Response.json({ ok: true, result: { file_path: 'documents/object.bin' } });
       }
-      if (url.includes('/file/')) return new Response('route-bytes');
+      if (url.includes('/file/')) {
+        const range = init.headers?.get?.('Range');
+        if (!range) return new Response('route-bytes');
+        assert.strictEqual(range, 'bytes=0-1', 'only the engine-normalized range reaches Telegram');
+        return new Response('ro', {
+          status: 206,
+          headers: { 'Content-Range': 'bytes 0-1/11', 'Content-Length': '2' },
+        });
+      }
       telegramSequence += 1;
       return Response.json({
         ok: true,
@@ -436,13 +464,13 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
 
     async function requestFor(key, method, extra = {}) {
       return runPipeline(storageMiddleware.onRequest, storageRoute, makeContext({
-        request: new Request(`https://example.com/api/storage/assets/nested/route.txt?project_id=${beta.project_id}`, {
+        request: new Request(extra.path || `https://example.com/api/storage/assets/nested/route.txt?project_id=${beta.project_id}`, {
           method,
           headers: { Authorization: `Bearer ${key}`, ...(extra.headers || {}) },
           ...(Object.prototype.hasOwnProperty.call(extra, 'body') ? { body: extra.body } : {}),
         }),
         env,
-        params: { bucket: 'assets', key: 'nested/route.txt' },
+        params: extra.params || { bucket: 'assets', key: 'nested/route.txt' },
       }));
     }
 
@@ -485,13 +513,54 @@ describe('Telegraph Cloud Phase 4 project-scoped object storage', function () {
       assert.strictEqual(notModified.status, 304);
       assert.strictEqual(fetchMock.calls.filter((call) => call.url.includes('/file/')).length, beforeHead);
 
+      const staleConditionalPut = await requestFor(alphaWrite.api_key, 'PUT', {
+        headers: { 'Content-Type': 'text/plain', 'If-Unmodified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT' },
+        body: 'must-not-replace',
+      });
+      assert.strictEqual(staleConditionalPut.status, 412);
+      assert.deepStrictEqual(await staleConditionalPut.json(), { error: 'precondition_failed' });
+
       const betaGet = await requestFor(betaWrite.api_key, 'GET');
       assert.strictEqual(betaGet.status, 404);
       assert.deepStrictEqual(await betaGet.json(), { error: 'object_not_found' });
 
+      const listed = await requestFor(alphaRead.api_key, 'GET', {
+        path: 'https://example.com/api/storage/assets?prefix=nested/&limit=10',
+        params: { bucket: 'assets' },
+      });
+      assert.strictEqual(listed.status, 200);
+      assert.strictEqual(listed.headers.get('Cache-Control'), 'private, no-store');
+      const listedBody = await listed.json();
+      assert.deepStrictEqual(listedBody.objects.map((object) => object.key), ['nested/route.txt']);
+      assert.deepStrictEqual(listedBody.objects[0].metadata, { owner: 'alpha' });
+      assert.ok(!/AgACRouteObject|file_id|message_id|revision_id/.test(JSON.stringify(listedBody)));
+
+      const betaListed = await requestFor(betaWrite.api_key, 'GET', {
+        path: 'https://example.com/api/storage/assets?limit=10',
+        params: { bucket: 'assets' },
+      });
+      assert.strictEqual(betaListed.status, 200);
+      assert.deepStrictEqual((await betaListed.json()).objects, []);
+
+      const clientProjectHint = await requestFor(alphaRead.api_key, 'GET', {
+        path: `https://example.com/api/storage/assets?project_id=${beta.project_id}`,
+        params: { bucket: 'assets' },
+      });
+      assert.strictEqual(clientProjectHint.status, 400);
+      assert.deepStrictEqual(await clientProjectHint.json(), { error: 'invalid_object_list_query' });
+
       const ranged = await requestFor(alphaRead.api_key, 'GET', { headers: { Range: 'bytes=0-1' } });
-      assert.strictEqual(ranged.status, 416);
-      assert.deepStrictEqual(await ranged.json(), { error: 'range_not_supported' });
+      assert.strictEqual(ranged.status, 206);
+      assert.strictEqual(ranged.headers.get('Content-Range'), 'bytes 0-1/11');
+      assert.strictEqual(ranged.headers.get('Content-Length'), '2');
+      assert.strictEqual(ranged.headers.get('Accept-Ranges'), 'bytes');
+      assert.strictEqual(await ranged.text(), 'ro');
+
+      const unsatisfiable = await requestFor(alphaRead.api_key, 'GET', { headers: { Range: 'bytes=99-100' } });
+      assert.strictEqual(unsatisfiable.status, 416);
+      assert.strictEqual(unsatisfiable.headers.get('Content-Range'), 'bytes */11');
+      assert.strictEqual(unsatisfiable.headers.get('Accept-Ranges'), 'bytes');
+      assert.deepStrictEqual(await unsatisfiable.json(), { error: 'range_not_satisfiable' });
 
       const unauthenticated = await runPipeline(storageMiddleware.onRequest, storageRoute, makeContext({
         request: new Request('https://example.com/api/storage/assets/key'),

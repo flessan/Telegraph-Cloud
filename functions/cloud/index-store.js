@@ -10,6 +10,10 @@ export const CLOUD_INDEX_PREFIX = 'tc:v1';
 
 const INDEX_NAMESPACE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const INDEX_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+// Some bounded secondary indexes need to seek inside their final segment while
+// retaining the same safe namespace/segment construction boundary. This is not
+// a raw caller-controlled KV prefix: the suffix cannot add a `:` segment.
+const INDEX_LIST_SUFFIX_PATTERN = /^[A-Za-z0-9._-]*$/;
 
 function invalidKey() {
   throw new CloudValidationError('invalid_index_key', 'Invalid Telegraph Cloud index key.');
@@ -38,6 +42,17 @@ function assertSegment(segment) {
     invalidKey();
   }
   return segment;
+}
+
+function assertListSuffix(value) {
+  if (
+    typeof value !== 'string'
+    || !INDEX_LIST_SUFFIX_PATTERN.test(value)
+    || utf8ByteLength(value) > CLOUD_LIMITS.MAX_DOCUMENT_ID_LENGTH
+  ) {
+    invalidKey();
+  }
+  return value;
 }
 
 function assertBinding(binding) {
@@ -126,6 +141,22 @@ export function createCloudIndexStore(env, { binding = getCloudIndexBinding(env)
     return kv.list(options);
   }
 
+  /**
+   * List below validated segments while matching a bounded prefix of the next
+   * segment. It exists for internally encoded ordered indexes; callers cannot
+   * inject another KV segment because `suffix` may not contain `:`.
+   */
+  async function listWithSuffix(namespace, { prefixSegments = [], suffix = '', limit, cursor } = {}) {
+    const safeNamespace = assertNamespace(namespace);
+    const safePrefixSegments = normalizeSegments(prefixSegments).map(assertSegment);
+    const safeSuffix = assertListSuffix(suffix);
+    const prefix = [CLOUD_INDEX_PREFIX, safeNamespace, ...safePrefixSegments].join(':') + ':' + safeSuffix;
+    const options = { prefix };
+    if (limit !== undefined) options.limit = limit;
+    if (cursor !== undefined) options.cursor = cursor;
+    return kv.list(options);
+  }
+
   return Object.freeze({
     bindingName: CLOUD_INDEX_BINDING,
     key,
@@ -133,5 +164,6 @@ export function createCloudIndexStore(env, { binding = getCloudIndexBinding(env)
     putJson,
     remove,
     list,
+    listWithSuffix,
   });
 }

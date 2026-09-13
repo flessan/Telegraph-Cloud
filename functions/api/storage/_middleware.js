@@ -59,6 +59,18 @@ export async function storageMutationRateLimit(context) {
   });
 }
 
+function safeStorageErrorHeaders(error) {
+  const headers = new Headers({ 'Cache-Control': 'no-store' });
+  // RFC range errors may expose only the already-public logical object size;
+  // no pointer, KV name, revision id, or provider diagnostic is serialized.
+  if (error?.code === 'range_not_satisfiable'
+    && Number.isSafeInteger(error.details?.object_size) && error.details.object_size >= 0) {
+    headers.set('Content-Range', `bytes */${error.details.object_size}`);
+    headers.set('Accept-Ranges', 'bytes');
+  }
+  return headers;
+}
+
 export async function storageErrorHandling(context) {
   try {
     return await context.next();
@@ -68,7 +80,7 @@ export async function storageErrorHandling(context) {
       // error details: they may include internal provider/KV diagnostics.
       return jsonResponse({ error: error.code }, {
         status: error.status,
-        headers: { 'Cache-Control': 'no-store' },
+        headers: safeStorageErrorHeaders(error),
       });
     }
     console.error('Telegraph Cloud object storage request failed.');

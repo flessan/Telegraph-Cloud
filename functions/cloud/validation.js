@@ -19,6 +19,10 @@ export const CLOUD_LIMITS = Object.freeze({
   MAX_DOCUMENT_DEPTH: 32,
   MAX_DOCUMENT_NODES: 10_000,
   MAX_OBJECT_BYTES: 20 * 1024 * 1024,
+  DEFAULT_OBJECT_LIST_LIMIT: 50,
+  MAX_OBJECT_LIST_LIMIT: 100,
+  MAX_OBJECT_LIST_CURSOR_BYTES: 1024,
+  MAX_OBJECT_RANGE_HEADER_BYTES: 256,
   MAX_CUSTOM_METADATA_ENTRIES: 20,
   MAX_CUSTOM_METADATA_NAME_BYTES: 64,
   MAX_CUSTOM_METADATA_VALUE_BYTES: 1024,
@@ -94,6 +98,15 @@ function isIpv4Like(value) {
 
 function objectKeyHasUnsafeSegment(value) {
   return value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..');
+}
+
+function objectPrefixHasUnsafeSegment(value) {
+  if (value === '') return false;
+  const segments = value.split('/');
+  // A listing prefix may end at a hierarchy boundary (`images/`), but it may
+  // not introduce an empty/`.`/`..` path segment elsewhere.
+  if (segments.at(-1) === '') segments.pop();
+  return segments.some((segment) => segment === '' || segment === '.' || segment === '..');
 }
 
 export function utf8ByteLength(value) {
@@ -252,6 +265,27 @@ export function assertObjectKey(value) {
     invalid('invalid_object_key', 'Invalid object key.');
   }
   return key;
+}
+
+/**
+ * A listing prefix is a literal object-key byte prefix, not a filesystem path.
+ * It may be empty or end in `/`, unlike a complete object key, but retains the
+ * same Unicode, control-character, URL-delimiter, and backslash safety rules.
+ */
+export function assertObjectKeyPrefix(value) {
+  const prefix = assertString(value, 'invalid_object_prefix', 'Invalid object prefix.', {
+    allowEmpty: true,
+    maxBytes: CLOUD_LIMITS.MAX_OBJECT_KEY_BYTES,
+  });
+  if (
+    prefix !== prefix.normalize('NFC')
+    || CONTROL_CHARACTER.test(prefix)
+    || /[\\%?#]/.test(prefix)
+    || objectPrefixHasUnsafeSegment(prefix)
+  ) {
+    invalid('invalid_object_prefix', 'Invalid object prefix.');
+  }
+  return prefix;
 }
 
 /**

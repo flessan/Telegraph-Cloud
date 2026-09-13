@@ -10,10 +10,26 @@ import {
 } from './errors.js';
 import { createCloudIndexStore } from './index-store.js';
 import {
+  createObjectListIndex,
+  parseObjectListQuery,
+  resolveObjectListLimits,
+  OBJECT_LIST_CURSOR_NAMESPACE,
+  OBJECT_LIST_CURSOR_SCHEMA,
+  OBJECT_LIST_INDEX_NAMESPACE,
+  OBJECT_LIST_INDEX_SCHEMA,
+} from './object-list-index.js';
+import {
   createTelegramObjectStorageAdapter,
   TELEGRAM_OBJECT_EVENT_POINTER_PROVIDER,
   TELEGRAM_OBJECT_POINTER_PROVIDER,
 } from './telegram-object-storage.js';
+export {
+  parseObjectListQuery,
+  resolveObjectListLimits,
+  OBJECT_LIST_CURSOR_SCHEMA,
+  OBJECT_LIST_INDEX_SCHEMA,
+} from './object-list-index.js';
+
 import {
   CLOUD_LIMITS,
   assertBucketName,
@@ -40,6 +56,8 @@ export const OBJECT_INDEX_NAMESPACES = Object.freeze({
   revision: 'object-revision',
   outbox: 'object-outbox',
   bucket: 'object-bucket',
+  list: OBJECT_LIST_INDEX_NAMESPACE,
+  cursor: OBJECT_LIST_CURSOR_NAMESPACE,
 });
 
 const ACTIVE = 'active';
@@ -472,6 +490,17 @@ function normalizeEntityTags(value, headerName) {
   return Object.freeze({ wildcard: false, tags: Object.freeze(tags) });
 }
 
+function normalizedHttpDate(value, headerName) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.length > 1024) {
+    throw new CloudRequestError('invalid_precondition', `Invalid ${headerName} header.`, { status: 400 });
+  }
+  const parsed = Date.parse(value);
+  // HTTP date parsing is deliberately forgiving: an invalid date is ignored
+  // rather than becoming an authorization or visibility control.
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+}
+
 function normalizeWriteConditions(input = {}) {
   if (!plainObject(input)) {
     throw new CloudRequestError('invalid_precondition', 'Object preconditions are invalid.', { status: 400 });
@@ -481,7 +510,23 @@ function normalizeWriteConditions(input = {}) {
   if (ifMatch && ifNoneMatch) {
     throw new CloudRequestError('invalid_precondition', 'If-Match and If-None-Match cannot be combined.', { status: 400 });
   }
-  return Object.freeze({ ifMatch, ifNoneMatch });
+  return Object.freeze({
+    ifMatch,
+    ifNoneMatch,
+    ifUnmodifiedSince: normalizedHttpDate(input.ifUnmodifiedSince, 'If-Unmodified-Since'),
+  });
+}
+
+function normalizeReadConditions(input = {}) {
+  if (!plainObject(input)) {
+    throw new CloudRequestError('invalid_precondition', 'Object read preconditions are invalid.', { status: 400 });
+  }
+  return Object.freeze({
+    ifMatch: normalizeEntityTags(input.ifMatch, 'If-Match'),
+    ifUnmodifiedSince: normalizedHttpDate(input.ifUnmodifiedSince, 'If-Unmodified-Since'),
+    ifNoneMatch: normalizeEntityTags(input.ifNoneMatch, 'If-None-Match'),
+    ifModifiedSince: normalizedHttpDate(input.ifModifiedSince, 'If-Modified-Since'),
+  });
 }
 
 function tagMatches(condition, etag, { strong = false } = {}) {
@@ -490,9 +535,18 @@ function tagMatches(condition, etag, { strong = false } = {}) {
   return condition.tags.some((tag) => tag.value === etag && (!strong || !tag.weak));
 }
 
+function modificationSecond(manifest) {
+  return Math.floor(Date.parse(manifest.updated_at) / 1000);
+}
+
 function assertWritePreconditions(current, conditions) {
   const active = current?.state === ACTIVE;
   if (conditions.ifMatch && (!active || !tagMatches(conditions.ifMatch, current.etag, { strong: true }))) {
+    throw new CloudRequestError('precondition_failed', 'Object precondition did not match.', { status: 412 });
+  }
+  // RFC precedence ignores If-Unmodified-Since when If-Match was supplied.
+  if (!conditions.ifMatch && conditions.ifUnmodifiedSince !== null && active
+    && modificationSecond(current) > conditions.ifUnmodifiedSince) {
     throw new CloudRequestError('precondition_failed', 'Object precondition did not match.', { status: 412 });
   }
   if (conditions.ifNoneMatch && active && tagMatches(conditions.ifNoneMatch, current.etag)) {
@@ -500,22 +554,75 @@ function assertWritePreconditions(current, conditions) {
   }
 }
 
-function isNotModified(manifest, conditions = {}) {
-  if (!plainObject(conditions)) {
-    throw new CloudRequestError('invalid_precondition', 'Object read preconditions are invalid.', { status: 400 });
+function assertReadPreconditions(manifest, conditions) {
+  if (conditions.ifMatch && !tagMatches(conditions.ifMatch, manifest.etag, { strong: true })) {
+    throw new CloudRequestError('precondition_failed', 'Object precondition did not match.', { status: 412 });
   }
-  const { ifNoneMatch, ifModifiedSince } = conditions;
-  const tags = normalizeEntityTags(ifNoneMatch, 'If-None-Match');
-  if (tags) return tagMatches(tags, manifest.etag);
-  if (ifModifiedSince === undefined || ifModifiedSince === null || ifModifiedSince === '') return false;
-  if (typeof ifModifiedSince !== 'string' || ifModifiedSince.length > 1024) {
-    throw new CloudRequestError('invalid_precondition', 'Invalid If-Modified-Since header.', { status: 400 });
+  // RFC precedence ignores If-Unmodified-Since when If-Match was supplied.
+  if (!conditions.ifMatch && conditions.ifUnmodifiedSince !== null
+    && modificationSecond(manifest) > conditions.ifUnmodifiedSince) {
+    throw new CloudRequestError('precondition_failed', 'Object precondition did not match.', { status: 412 });
   }
-  const parsed = Date.parse(ifModifiedSince);
-  // RFC-compatible behavior for a syntactically invalid HTTP date is to ignore
-  // it rather than let it influence authorization or object visibility.
-  if (!Number.isFinite(parsed)) return false;
-  return Math.floor(Date.parse(manifest.updated_at) / 1000) <= Math.floor(parsed / 1000);
+  if (conditions.ifNoneMatch) return tagMatches(conditions.ifNoneMatch, manifest.etag);
+  if (conditions.ifModifiedSince === null) return false;
+  return modificationSecond(manifest) <= conditions.ifModifiedSince;
+}
+
+function rangeNotSatisfiable(size) {
+  return new CloudRequestError('range_not_satisfiable', 'The requested object range is not satisfiable.', {
+    status: 416,
+    details: { object_size: size },
+  });
+}
+
+function safeRangeInteger(value) {
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/** Parse only a single RFC-style bytes range after the active manifest is known. */
+function normalizeByteRange(value, size) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.length > CLOUD_LIMITS.MAX_OBJECT_RANGE_HEADER_BYTES || size < 1) {
+    throw rangeNotSatisfiable(size);
+  }
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value);
+  if (!match || (!match[1] && !match[2])) throw rangeNotSatisfiable(size);
+  const start = match[1] ? safeRangeInteger(match[1]) : null;
+  const end = match[2] ? safeRangeInteger(match[2]) : null;
+  if ((match[1] && start === null) || (match[2] && end === null)) throw rangeNotSatisfiable(size);
+
+  let first;
+  let last;
+  if (start === null) {
+    if (end === 0) throw rangeNotSatisfiable(size);
+    first = end >= size ? 0 : size - end;
+    last = size - 1;
+  } else {
+    if (start >= size) throw rangeNotSatisfiable(size);
+    first = start;
+    last = end === null ? size - 1 : Math.min(end, size - 1);
+    if (last < first) throw rangeNotSatisfiable(size);
+  }
+  return Object.freeze({
+    start: first,
+    end: last,
+    size,
+    length: last - first + 1,
+  });
+}
+
+function validatePartialResponse(response, range) {
+  if (!response || response.status !== 206) {
+    throw new CloudAdapterError('storage_range_unavailable', 'Object range retrieval is temporarily unavailable.', { status: 502 });
+  }
+  const expectedRange = `bytes ${range.start}-${range.end}/${range.size}`;
+  const upstreamLength = response.headers?.get?.('Content-Length');
+  if (response.headers?.get?.('Content-Range') !== expectedRange
+    || (upstreamLength !== null && upstreamLength !== String(range.length))) {
+    throw new CloudAdapterError('storage_range_unavailable', 'Object range retrieval is temporarily unavailable.', { status: 502 });
+  }
 }
 
 function idempotencyFingerprintPayload({ operation, bucket, key, contentHash, size, contentType, metadata }) {
@@ -541,6 +648,7 @@ function ensureServiceDependencies(index, transport) {
     || typeof index.putJson !== 'function'
     || typeof index.remove !== 'function'
     || typeof index.list !== 'function'
+    || typeof index.listWithSuffix !== 'function'
     || !transport
     || typeof transport.putObject !== 'function'
     || typeof transport.appendEvent !== 'function'
@@ -569,7 +677,10 @@ export function createTelegramObjectStorage(env, {
 } = {}) {
   const safeProjectId = assertProjectId(projectId);
   ensureServiceDependencies(index, transport);
-  const limits = resolveObjectStorageLimits(env);
+  const limits = Object.freeze({
+    ...resolveObjectStorageLimits(env),
+    ...resolveObjectListLimits(env),
+  });
 
   async function digest(value) {
     return sha256(value, cryptoApi);
@@ -625,6 +736,17 @@ export function createTelegramObjectStorage(env, {
       manifest,
     );
   }
+
+  const objectListIndex = createObjectListIndex({
+    env,
+    index,
+    projectId: safeProjectId,
+    now,
+    createId,
+    cryptoApi,
+    readManifest,
+    publicObject,
+  });
 
   async function persistRevision(manifest) {
     const existingValue = await indexGet(OBJECT_INDEX_NAMESPACES.revision, safeProjectId, manifest.revision_id);
@@ -909,6 +1031,10 @@ export function createTelegramObjectStorage(env, {
       await persistRevision(candidate);
       materialized = await materializeCandidate(candidate);
       if (materialized.state === ACTIVE) await ensureBucket(materialized);
+      // The secondary key-order index is derived from the authoritative current
+      // manifest. It is replay-safe from a ready outbox and never becomes a
+      // public source of truth when it lags a direct manifest read.
+      await objectListIndex.materialize(materialized);
     } catch (error) {
       if (error instanceof CloudConflictError || error instanceof CloudRequestError || error instanceof CloudNotFoundError) {
         throw error;
@@ -985,7 +1111,11 @@ export function createTelegramObjectStorage(env, {
     const metadata = normalizeMetadata(input.metadata);
     const body = normalizeObjectBytes(input.body, limits.maxObjectBytes);
     const contentHash = await digest(body);
-    const conditions = normalizeWriteConditions({ ifMatch: input.ifMatch, ifNoneMatch: input.ifNoneMatch });
+    const conditions = normalizeWriteConditions({
+      ifMatch: input.ifMatch,
+      ifNoneMatch: input.ifNoneMatch,
+      ifUnmodifiedSince: input.ifUnmodifiedSince,
+    });
     let idempotencyKey = null;
     if (input.idempotencyKey !== undefined && input.idempotencyKey !== null) {
       idempotencyKey = assertIdempotencyKey(input.idempotencyKey);
@@ -1027,37 +1157,51 @@ export function createTelegramObjectStorage(env, {
   }
 
   async function getObject(_scope, bucket, key, conditions = {}) {
+    const readConditions = normalizeReadConditions(conditions);
     const manifest = await activeManifest(bucket, key);
-    if (isNotModified(manifest, conditions)) {
+    if (assertReadPreconditions(manifest, readConditions)) {
       return Object.freeze({ status: 304, not_modified: true, object: publicObject(manifest) });
     }
+    const range = normalizeByteRange(conditions.range, manifest.size);
     let response;
     try {
-      response = await transport.getObject(transportPointer(manifest.storage));
+      response = await transport.getObject(
+        transportPointer(manifest.storage),
+        range ? { range } : undefined,
+      );
+      if (range) validatePartialResponse(response, range);
     } catch (error) {
       if (isTelegraphCloudError(error)) throw error;
       throw storageBackendFailure();
     }
     return Object.freeze({
-      status: 200,
+      status: range ? 206 : 200,
       not_modified: false,
       object: publicObject(manifest),
+      ...(range ? { range } : {}),
       body: response.body,
     });
   }
 
   async function headObject(_scope, bucket, key, conditions = {}) {
+    const readConditions = normalizeReadConditions(conditions);
     const manifest = await activeManifest(bucket, key);
-    if (isNotModified(manifest, conditions)) {
+    if (assertReadPreconditions(manifest, readConditions)) {
       return Object.freeze({ status: 304, not_modified: true, object: publicObject(manifest) });
     }
+    const range = normalizeByteRange(conditions.range, manifest.size);
     try {
       await transport.headObject(transportPointer(manifest.storage));
     } catch (error) {
       if (isTelegraphCloudError(error)) throw error;
       throw storageBackendFailure();
     }
-    return Object.freeze({ status: 200, not_modified: false, object: publicObject(manifest) });
+    return Object.freeze({
+      status: range ? 206 : 200,
+      not_modified: false,
+      object: publicObject(manifest),
+      ...(range ? { range } : {}),
+    });
   }
 
   async function deleteObject(_scope, bucket, key, input = {}) {
@@ -1065,7 +1209,11 @@ export function createTelegramObjectStorage(env, {
       throw new CloudRequestError('invalid_object_request', 'Object request is invalid.', { status: 400 });
     }
     const location = await manifestLocation(bucket, key);
-    const conditions = normalizeWriteConditions({ ifMatch: input.ifMatch, ifNoneMatch: input.ifNoneMatch });
+    const conditions = normalizeWriteConditions({
+      ifMatch: input.ifMatch,
+      ifNoneMatch: input.ifNoneMatch,
+      ifUnmodifiedSince: input.ifUnmodifiedSince,
+    });
     let idempotencyKey = null;
     if (input.idempotencyKey !== undefined && input.idempotencyKey !== null) {
       idempotencyKey = assertIdempotencyKey(input.idempotencyKey);
@@ -1104,11 +1252,10 @@ export function createTelegramObjectStorage(env, {
     return Object.freeze({ status: 200, deletion: publicDeletion(normalizeManifest(manifest)) });
   }
 
-  async function listObjects() {
-    // Keep the Phase 1 contract complete without exposing a partial list model.
-    // Phase 5 can add a separately designed bounded JSON/S3-compatible listing
-    // layer over manifests; there is intentionally no ListObjectsV2 route now.
-    throw new CloudRequestError('object_listing_not_available', 'Object listing is not available in this phase.', { status: 501 });
+  async function listObjects(_scope, bucket, input = {}) {
+    // Keep bucket validation/status consistent with PUT/GET/HEAD/DELETE before
+    // entering the lower-level ordered-index traversal.
+    return objectListIndex.listObjects(normalizeBucket(bucket), input);
   }
 
   const providerAdapter = {
@@ -1116,7 +1263,7 @@ export function createTelegramObjectStorage(env, {
     getObject: (_scope, bucket, key, conditions) => getObject(_scope, bucket, key, conditions),
     headObject: (_scope, bucket, key, conditions) => headObject(_scope, bucket, key, conditions),
     deleteObject: (_scope, bucket, key, input) => deleteObject(_scope, bucket, key, input),
-    listObjects: () => listObjects(),
+    listObjects: (_scope, bucket, input) => listObjects(_scope, bucket, input),
   };
   const generic = createObjectStorageService(providerAdapter);
   const scope = Object.freeze({ projectId: safeProjectId });
@@ -1129,7 +1276,7 @@ export function createTelegramObjectStorage(env, {
     getObject: (bucket, key, conditions) => generic.getObject(scope, bucket, key, conditions),
     headObject: (bucket, key, conditions) => generic.headObject(scope, bucket, key, conditions),
     deleteObject: (bucket, key, input) => generic.deleteObject(scope, bucket, key, input),
-    listObjects: () => generic.listObjects(scope),
+    listObjects: (bucket, input) => generic.listObjects(scope, bucket, input),
     limits,
   });
 }

@@ -1,7 +1,9 @@
 import {
-  ensureRangeIsNotRequested,
   methodNotAllowedResponse,
   objectDeleteResponse,
+  objectKeyWasProvided,
+  objectListQueryForRequest,
+  objectListResponse,
   objectLocationFromContext,
   objectPutInput,
   objectPutResponse,
@@ -19,19 +21,24 @@ export async function onRequest(context) {
   const storage = objectStorageForContext(context);
   const { bucket, key } = objectLocationFromContext(context);
 
+  if (!objectKeyWasProvided(context)) {
+    if (request.method === 'GET') {
+      return objectListResponse(await storage.listObjects(bucket, objectListQueryForRequest(request, context.env)));
+    }
+    return methodNotAllowedResponse('GET');
+  }
+
   if (request.method === 'PUT') {
     const result = await storage.putObject(bucket, key, await objectPutInput(request, context.env));
     return objectPutResponse(result);
   }
 
   if (request.method === 'GET') {
-    ensureRangeIsNotRequested(request);
     const result = await storage.getObject(bucket, key, objectReadConditions(request));
     return objectReadResponse(result, { method: 'GET' });
   }
 
   if (request.method === 'HEAD') {
-    ensureRangeIsNotRequested(request);
     const result = await storage.headObject(bucket, key, objectReadConditions(request));
     return objectReadResponse(result, { method: 'HEAD' });
   }

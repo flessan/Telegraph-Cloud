@@ -59,6 +59,15 @@ describe('Telegraph Cloud validation foundations', function () {
     ]) {
       rejects(() => validation.assertObjectKey(unsafe), 'invalid_object_key');
     }
+
+    assert.strictEqual(validation.assertObjectKeyPrefix('images/'), 'images/');
+    assert.strictEqual(validation.assertObjectKeyPrefix(''), '');
+    for (const unsafePrefix of [
+      '../', 'images/../', 'images//', '/images',
+      'images%2F', 'images?token=x', 'images#fragment', 'images\\unsafe', 're\u0301sume\u0301',
+    ]) {
+      rejects(() => validation.assertObjectKeyPrefix(unsafePrefix), 'invalid_object_prefix');
+    }
   });
 
   it('keeps legacy file ids compatibility-conscious while blocking upstream URL injection', function () {

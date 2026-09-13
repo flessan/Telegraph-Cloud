@@ -182,15 +182,27 @@ export function createTelegramObjectStorageAdapter(env, {
     });
   }
 
-  async function getObject(pointer) {
+  async function getObject(pointer, options = {}) {
+    const { range = null } = options || {};
     const { downloadUrl } = await resolveDownload(pointer);
+    let headers;
+    if (range !== null) {
+      if (!range || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+        || !Number.isSafeInteger(range.size) || range.start < 0 || range.end < range.start
+        || range.end >= range.size || range.size < 1) {
+        throw safeBackendFailure();
+      }
+      headers = new Headers({ Range: `bytes=${range.start}-${range.end}` });
+    }
     let response;
     try {
       // Object authorization and conditional handling happen before this call.
-      // A synthetic request prevents developer credentials, ranges, cookies,
-      // caller conditions, and arbitrary request headers from reaching Telegram.
+      // A synthetic request forwards only an engine-validated single range;
+      // developer credentials, cookies, caller conditions, and arbitrary
+      // headers never reach the token-bearing Telegram file URL.
       response = await client.fetchDownload(downloadUrl, new Request('https://telegraph-cloud.invalid/object', {
         method: 'GET',
+        ...(headers ? { headers } : {}),
       }));
     } catch (_) {
       throw safeBackendFailure();

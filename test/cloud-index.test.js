@@ -45,6 +45,18 @@ describe('Telegraph Cloud materialized index foundation', function () {
     assert.strictEqual(kv.operations.list[0].prefix, 'tc:v1:records:prj_A1b2C3d4:');
     assert.strictEqual(page.keys.length, 1);
 
+    const ordered = await store.listWithSuffix('records', {
+      prefixSegments: ['prj_A1b2C3d4', 'users'], suffix: 'usr_',
+    });
+    assert.strictEqual(kv.operations.list.at(-1).prefix, 'tc:v1:records:prj_A1b2C3d4:users:usr_');
+    assert.strictEqual(ordered.keys.length, 1);
+    await assert.rejects(
+      () => store.listWithSuffix('records', {
+        prefixSegments: ['prj_A1b2C3d4'], suffix: 'unsafe:segment',
+      }),
+      (error) => error && error.code === 'invalid_index_key',
+    );
+
     await store.remove('records', 'prj_A1b2C3d4', 'users', 'usr_123');
     assert.strictEqual(await store.getJson('records', 'prj_A1b2C3d4', 'users', 'usr_123'), null);
   });
