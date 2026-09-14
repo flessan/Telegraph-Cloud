@@ -47,6 +47,9 @@ export const CLOUD_LIMITS = Object.freeze({
   MAX_DOCUMENT_QUERY_VALUE_BYTES: 64,
   MAX_DOCUMENT_INDEXED_FIELDS: 16,
   MAX_DOCUMENT_CURSOR_BYTES: 1024,
+  // Console collection discovery scans only lightweight KV key names, but it
+  // is still bounded so an operator console can never trigger an unbounded walk.
+  MAX_COLLECTION_SCAN_KEYS: 5000,
   MAX_IDEMPOTENCY_KEY_BYTES: 128,
 });
 

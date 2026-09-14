@@ -14,7 +14,7 @@ import {
   CloudRequestError,
   isTelegraphCloudError,
 } from './errors.js';
-import { createCloudIndexStore } from './index-store.js';
+import { cloudIndexKey, createCloudIndexStore } from './index-store.js';
 import {
   createObjectListIndex,
   parseObjectListQuery,
@@ -376,6 +376,32 @@ function normalizeBucketRecord(value) {
   } catch (_) {
     throw corruptIndex();
   }
+}
+
+function publicBucket(record) {
+  return Object.freeze({
+    bucket: record.bucket,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+  });
+}
+
+const BUCKET_LIST_MAX_LIMIT = 100;
+function normalizeBucketListOptions(value = {}) {
+  if (!plainObject(value)) {
+    throw new CloudValidationError('invalid_bucket_list_query', 'Bucket list query is invalid.');
+  }
+  for (const field of Object.keys(value)) {
+    if (field !== 'limit' && field !== 'cursor') {
+      throw new CloudValidationError('invalid_bucket_list_query', 'Bucket list query contains an unsupported field.');
+    }
+  }
+  const limit = value.limit === undefined || value.limit === null ? 50 : Number(value.limit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > BUCKET_LIST_MAX_LIMIT) {
+    throw new CloudValidationError('invalid_bucket_list_limit', 'Bucket list limit is outside the supported range.');
+  }
+  const cursor = value.cursor === undefined || value.cursor === null || value.cursor === '' ? undefined : String(value.cursor);
+  return Object.freeze({ limit, cursor });
 }
 
 function normalizeOutbox(value) {
@@ -809,6 +835,77 @@ export function createTelegramObjectStorage(env, {
   // bucket administration into a generic object-service operation.
   async function bucketExists(bucket) {
     return (await readBucket(bucket)) !== null;
+  }
+
+  // Dashboard bucket administration. The marker is exactly the record written
+  // by the first successful PutObject, so an explicitly created empty bucket
+  // and an implicitly created one are indistinguishable. This deliberately
+  // does not become an S3 CreateBucket API: the Phase 6 protocol surface stays
+  // marker-on-first-put only.
+  async function createBucketMarker(bucketInput) {
+    const safeBucket = normalizeBucket(bucketInput);
+    const existing = await readBucket(safeBucket);
+    if (existing) return Object.freeze({ created: false, bucket: publicBucket(existing) });
+    const timestamp = timestampFrom(now);
+    const bucket = {
+      schema: OBJECT_BUCKET_SCHEMA,
+      project_id: safeProjectId,
+      bucket: safeBucket,
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    await indexPut(OBJECT_INDEX_NAMESPACES.bucket, [safeProjectId, safeBucket], bucket);
+    const confirmed = await readBucket(safeBucket);
+    if (!confirmed) throw storageBackendFailure();
+    return Object.freeze({ created: true, bucket: publicBucket(confirmed) });
+  }
+
+  // Key names only: the object-list index never has to be traversed to show
+  // the Drive root. Bounded like every other console listing.
+  async function listBuckets(input = {}) {
+    const options = normalizeBucketListOptions(input);
+    const page = await (async () => {
+      try {
+        return await index.list(OBJECT_INDEX_NAMESPACES.bucket, {
+          prefixSegments: [safeProjectId],
+          limit: options.limit,
+          cursor: options.cursor,
+        });
+      } catch (error) {
+        if (isTelegraphCloudError(error)) throw error;
+        throw storageBackendFailure();
+      }
+    })();
+    if (!page || !Array.isArray(page.keys) || typeof page.list_complete !== 'boolean') {
+      throw new CloudAdapterError('object_bucket_invalid_page', 'Bucket list state is invalid.', { status: 500 });
+    }
+    const prefix = `${cloudIndexKey(OBJECT_INDEX_NAMESPACES.bucket, safeProjectId)}:`;
+    const names = [];
+    for (const entry of page.keys) {
+      const name = String(entry?.name || '');
+      if (!name.startsWith(prefix)) continue;
+      const suffix = name.slice(prefix.length);
+      if (suffix.includes(':')) continue;
+      try {
+        names.push(assertBucketName(suffix));
+      } catch (_) {
+        // A corrupt marker name never becomes console data.
+      }
+    }
+    names.sort((left, right) => left.localeCompare(right));
+    const records = await Promise.all(names.map(async (name) => {
+      const record = await readBucket(name);
+      return record ? publicBucket(record) : null;
+    }));
+    const data = records.filter(Boolean);
+    const hasMore = !page.list_complete;
+    return Object.freeze({
+      data: Object.freeze(data),
+      limit: options.limit,
+      order: 'bucket:asc',
+      ...(hasMore && typeof page.cursor === 'string' ? { next_cursor: page.cursor } : {}),
+      has_more: hasMore,
+    });
   }
 
   async function allocateMutationId(idempotencyKey) {
@@ -1288,6 +1385,8 @@ export function createTelegramObjectStorage(env, {
     deleteObject: (bucket, key, input) => generic.deleteObject(scope, bucket, key, input),
     listObjects: (bucket, input) => generic.listObjects(scope, bucket, input),
     bucketExists: (bucket) => bucketExists(bucket),
+    listBuckets: (input) => listBuckets(input),
+    createBucketMarker: (bucket) => createBucketMarker(bucket),
     limits,
   });
 }

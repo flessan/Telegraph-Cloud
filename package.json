@@ -4,6 +4,8 @@
     "ci-test": "mocha",
     "test:e2e": "node test/e2e/homepage.js",
     "start": "npx wrangler pages dev ./ --kv \"img_url\" --r2 \"img_r2\" --ip 0.0.0.0 --port 8080 --binding BASIC_USER=admin --binding BASIC_PASS=123 --persist-to ./data",
+    "start:cloud": "npx wrangler pages dev ./ --kv \"img_url\" --kv \"TELEGRAPH_CLOUD_KV\" --r2 \"img_r2\" --ip 0.0.0.0 --port 8080 --binding BASIC_USER=admin --binding BASIC_PASS=123 --binding API_KEY_PEPPER=dev-only-api-key-pepper-change-me-0123456789 --binding TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER=dev-only-s3-credential-pepper-change-me-0123 --persist-to ./data",
+    "start:cloud:r2": "npx wrangler pages dev ./ --kv \"img_url\" --kv \"TELEGRAPH_CLOUD_KV\" --r2 \"img_r2\" --ip 0.0.0.0 --port 8080 --binding BASIC_USER=admin BASIC_PASS=123 STORAGE_PROVIDER=r2 API_KEY_PEPPER=dev-only-api-key-pepper-change-me-0123456789 TELEGRAPH_CLOUD_S3_CREDENTIAL_PEPPER=dev-only-s3-credential-pepper-change-me-0123 --persist-to ./data",
     "start:r2": "npx wrangler pages dev ./ --kv \"img_url\" --r2 \"img_r2\" --ip 0.0.0.0 --port 8080 --binding BASIC_USER=admin BASIC_PASS=123 STORAGE_PROVIDER=r2 disable_telemetry=true --persist-to ./data",
     "test:e2e:albums": "node test/e2e/albums.js",
     "test:e2e:push": "node test/e2e/push-mime.js"

@@ -10,6 +10,7 @@ export const DOCUMENT_DATABASE_METHODS = Object.freeze([
   'patchDocument',
   'deleteDocument',
   'listDocumentHistory',
+  'listCollections',
 ]);
 
 export const OBJECT_STORAGE_METHODS = Object.freeze([
@@ -46,6 +47,7 @@ export function createDocumentDatabaseService(adapter) {
     patchDocument: (...args) => implementation.patchDocument(...args),
     deleteDocument: (...args) => implementation.deleteDocument(...args),
     listDocumentHistory: (...args) => implementation.listDocumentHistory(...args),
+    listCollections: (...args) => implementation.listCollections(...args),
   });
 }
 
