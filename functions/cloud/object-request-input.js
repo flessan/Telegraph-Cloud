@@ -35,3 +35,39 @@ export function objectReadConditions(request) {
     range: request.headers.get('Range'),
   };
 }
+
+// Pages Functions route params may arrive percent-encoded or already decoded
+// depending on the runtime. The S3 adapter avoids the ambiguity by decoding
+// the request path itself; catch-all object routes use this helper to do the
+// same, exactly once. A single route segment that decodes into a path
+// separator is rejected so an encoded slash cannot rewrite the hierarchy
+// after routing. Returns null on malformed percent encoding; valid object
+// keys never contain a literal '%' (validation rejects that character), so
+// decoding an already-decoded segment is idempotent here.
+function decodeSingle(segment, { rejectSeparator }) {
+  try {
+    const decoded = decodeURIComponent(String(segment));
+    if (rejectSeparator && (decoded.includes('/') || decoded.includes('\\'))) return null;
+    return decoded;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function decodeRouteSegment(value) {
+  // A catch-all parameter is an array of individual path segments: an encoded
+  // slash inside one element must not create new hierarchy after routing.
+  if (Array.isArray(value)) {
+    const decoded = [];
+    for (const segment of value) {
+      const part = decodeSingle(segment, { rejectSeparator: true });
+      if (part === null) return null;
+      decoded.push(part);
+    }
+    return decoded.join('/');
+  }
+  if (value === undefined || value === null) return '';
+  // Tests (and single-segment params) may supply the full key as one scalar;
+  // real separators in that string are already the intended hierarchy.
+  return decodeSingle(value, { rejectSeparator: false });
+}

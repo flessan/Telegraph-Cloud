@@ -6,3 +6,4 @@ data-broken/*
 test/e2e/output/*
 test/e2e/output-albums/*
 test/e2e/output-push/*
+node_modules/

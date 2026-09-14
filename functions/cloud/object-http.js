@@ -7,10 +7,11 @@ import { resolveObjectStorageLimits } from './object-limits.js';
 import {
   CUSTOM_METADATA_PREFIX,
   customMetadataFromHeaders,
+  decodeRouteSegment,
   objectReadConditions,
   objectWriteInput,
 } from './object-request-input.js';
-import { CloudUnauthorizedError } from './errors.js';
+import { CloudUnauthorizedError, CloudValidationError } from './errors.js';
 import { jsonResponse } from '../utils/http.js';
 
 // Keep the established object-http import surface while generic request
@@ -19,15 +20,10 @@ export { readBoundedObjectBody } from './bounded-body.js';
 export {
   CUSTOM_METADATA_PREFIX,
   customMetadataFromHeaders,
+  decodeRouteSegment,
   objectReadConditions,
   objectWriteInput,
 } from './object-request-input.js';
-
-function keyFromParams(params) {
-  const raw = params?.key;
-  if (Array.isArray(raw)) return raw.join('/');
-  return raw;
-}
 
 /** True only for the object route, never for GET /api/storage/:bucket listing. */
 export function objectKeyWasProvided(context) {
@@ -35,9 +31,18 @@ export function objectKeyWasProvided(context) {
   return (typeof raw === 'string' && raw.length > 0) || (Array.isArray(raw) && raw.length > 0);
 }
 
-/** Extract only the route bucket/key; no query/header project selector exists. */
+/**
+ * Extract the route bucket/key, percent-decoding catch-all params exactly once
+ * (runtime params may arrive encoded; see decodeRouteSegment). No query or
+ * header project selector is ever consulted here.
+ */
 export function objectLocationFromContext(context) {
-  return { bucket: context?.params?.bucket, key: keyFromParams(context?.params) };
+  const bucket = decodeRouteSegment(context?.params?.bucket);
+  const key = objectKeyWasProvided(context) ? decodeRouteSegment(context?.params?.key) : '';
+  if (bucket === null || key === null) {
+    throw new CloudValidationError('invalid_object_key', 'Invalid object key.');
+  }
+  return { bucket, key };
 }
 
 /**

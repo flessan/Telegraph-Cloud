@@ -19,6 +19,7 @@
 - [Telegraph Cloud 文档数据库（Phase 2–3）](#telegraph-cloud-文档数据库phase-23)
 - [Telegraph Cloud 项目与开发者 API Key（Phase 3）](#telegraph-cloud-项目与开发者-api-keyphase-3)
 - [Telegraph Cloud 对象存储（Phase 4–6B）](#telegraph-cloud-对象存储phase-46b)
+- [Telegraph Cloud 云控制台（Phase 7）](#telegraph-cloud-云控制台phase-7)
 - [生产就绪与运行手册（Phase 6C）](#生产就绪与运行手册phase-6c)
 - [使用限制与免费额度](#使用限制与免费额度)
 - [已经部署了的，如何更新？](#已经部署了的如何更新)
@@ -193,6 +194,12 @@
 
 当然你也可以不设置这两个值，这样访问后台管理页面时将无需验证，直接跳过登录步骤，这一设计使得你可以结合 Cloudflare Access 进行使用，实现支持邮件验证码登录，Microsoft 账户登录，Github 账户登录等功能，能够与你域名上原有的登录方式所集成，无需再次记忆多一组后台的账号密码，添加 Cloudflare Access 的方式请参考官方文档，注意需要保护路径包括/admin 以及 /api/manage/\*
 
+### Telegraph Cloud 云控制台（Phase 7）
+
+启用 Cloud 绑定（见上方 [Telegraph Cloud 基础设施、文档数据库、项目与对象](#telegraph-cloud-基础设施文档数据库项目与对象phase-16b)）后，登录并访问 `/console`：一个参考 Google Drive、Cloudflare/Supabase 控制台风格的现代化云控制台，直接使用 Phase 1–6C 的 API，不改动后端架构。全局区域为**概览 / 项目 / 文档 / 设置**；每个项目下有**概览、Drive（云盘）、Database（Telegraph Database 文档数据库，绝非 PostgreSQL）、S3、API Keys、S3 凭证、Connect（接入向导）、设置**。Drive 与 `/api/storage/*`、`/s3/*` 共用同一个对象引擎，支持拖拽上传（进度/重试）、多层文件夹、重命名、移动、加星、回收站/恢复、搜索与排序、网格/列表、多选批量操作、键盘快捷键、右键菜单、面包屑、按 MIME 类型预览、详情侧栏，以及直接链接 / Markdown / HTML / BBCode / CSS 代码片段。
+
+公开但不公开列出的直链由只读端点 `GET/HEAD /p/:projectId/:bucket/*key` 提供，任何人可匿名读取；对象移入回收站即立即吊销直链；不存在匿名写入、预签名 URL 或单文件密码。API Key（`tg_live_…`，Bearer）与 S3 凭证（`tgsk_live_…`，SigV4）分开管理、按 scope 授权，明文密钥仅在创建/轮换时显示一次，绝不进入 localStorage、URL 或日志。S3 章节只列出适配器真正实现的操作。原 `/admin` 工作区作为**旧版媒体（Legacy Media）**保留入口，`/file/*` 链接完全不受影响。控制台基于既有 `ti.lang` 体系完整中文化（英文 + 中文），并具备响应式布局、键盘/读屏无障碍与减弱动效支持。完整说明见 [docs/telegraph-cloud-console.md](docs/telegraph-cloud-console.md)（英文）。
+
 ### 上传保护
 
 默认公开上传。如果只想保护公开上传入口，可以单独设置 `UPLOAD_BASIC_USER` 和 `UPLOAD_BASIC_PASS`，设置后网页和 API 上传都需要通过 Basic Auth 验证（API 调用方式见 [API 上传](#api-上传)）。这两个变量都不设置时，上传入口会保持公开，以兼容已有部署。
@@ -365,7 +372,7 @@ Phase 3 增加不透明的 `prj_…` 项目边界与安全生成的 `tg_live_…
 
 ## Telegraph Cloud 对象存储（Phase 4–6B）
 
-实验性的 `/api/storage/:bucket` 与 `/api/storage/:bucket/:key` 是**按项目隔离、以 Telegram 为后端的通用对象引擎**，不是完整 S3/R2 兼容层、公开文件托管、事务/ACID 存储或无限性能服务。拥有 storage scope 的 Bearer Key 决定项目；客户端 `project_id` 提示永远不能选择项目。原始字节作为 Telegram 文档上传，`TELEGRAPH_CLOUD_KV` 只保存小型、可修复的 manifest、分阶段 outbox、修订索引和 Phase 5 列表索引；Phase 5.1 修复 checkpoint 与 Phase 6B S3 continuation token 是加密、自包含 token，不作为 KV 记录。已有 `/upload` 与 `/file/*` 保持独立且完全不变。
+实验性的 `/api/storage/:bucket` 与 `/api/storage/:bucket/:key` 是**按项目隔离、以 Telegram 为后端的通用对象引擎**，不是完整 S3/R2 兼容层、事务/ACID 存储或无限性能服务。拥有 storage scope 的 Bearer Key 决定项目；客户端 `project_id` 提示永远不能选择项目。Phase 7 在同一引擎上增加了唯一的只读公开投递面：不公开列出的直链 `GET/HEAD /p/:projectId/:bucket/*key`（匿名可读，移入回收站即吊销，无匿名写入、无列表、无预签名 URL），见 [Telegraph Cloud 云控制台（Phase 7）](#telegraph-cloud-云控制台phase-7)。原始字节作为 Telegram 文档上传，`TELEGRAPH_CLOUD_KV` 只保存小型、可修复的 manifest、分阶段 outbox、修订索引和 Phase 5 列表索引；Phase 5.1 修复 checkpoint 与 Phase 6B S3 continuation token 是加密、自包含 token，不作为 KV 记录。已有 `/upload` 与 `/file/*` 保持独立且完全不变。
 
 | 方法 | 路由 | Scope | 用途 |
 | --- | --- | --- | --- |

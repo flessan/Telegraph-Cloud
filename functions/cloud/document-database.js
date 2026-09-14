@@ -1448,6 +1448,72 @@ export function createTelegramDocumentDatabase(env, {
     return entries.sort((left, right) => left.version - right.version);
   }
 
+  // Console-only collection discovery. The collection index stores one small
+  // key-name entry per visible record, so distinct collections come from key
+  // names alone (no revision payloads). The scan is deliberately bounded: a
+  // larger project gets truthful `truncated` state instead of an unbounded KV
+  // walk, and this never becomes a query engine.
+  async function listCollections(input = {}) {
+    if (!plainObject(input) || Object.keys(input).some((field) => field !== 'maxKeys')) {
+      throw new CloudValidationError('invalid_collection_query', 'Collection query is invalid.');
+    }
+    const hardCap = CLOUD_LIMITS.MAX_COLLECTION_SCAN_KEYS;
+    const requested = input.maxKeys === undefined ? hardCap : Number(input.maxKeys);
+    if (!Number.isSafeInteger(requested) || requested < 1 || requested > hardCap) {
+      throw new CloudValidationError('invalid_collection_scan_limit', 'Collection scan limit is invalid.');
+    }
+    const scopeSegments = projectScope === null ? [] : [projectScope];
+    const basePrefix = `${cloudIndex.key(DOCUMENT_INDEX_NAMESPACES.collection, ...scopeSegments)}:`;
+    const counts = new Map();
+    let cursor;
+    let scanned = 0;
+    let truncated = false;
+
+    while (scanned < requested) {
+      const page = await listIndex(DOCUMENT_INDEX_NAMESPACES.collection, {
+        prefixSegments: scopeSegments,
+        limit: Math.min(1000, requested - scanned),
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!page || !Array.isArray(page.keys) || typeof page.list_complete !== 'boolean') {
+        throw new CloudAdapterError('cloud_index_invalid_page', 'Cloud index returned an invalid page.', { status: 500 });
+      }
+      for (const entry of page.keys) {
+        const name = String(entry?.name || '');
+        if (!name.startsWith(basePrefix)) continue;
+        const remainder = name.slice(basePrefix.length);
+        const separator = remainder.indexOf(':');
+        const collection = separator === -1 ? remainder : remainder.slice(0, separator);
+        if (!collection) continue;
+        counts.set(collection, (counts.get(collection) || 0) + 1);
+      }
+      scanned += page.keys.length;
+      if (page.list_complete) { cursor = undefined; break; }
+      cursor = page.cursor;
+      if (!cursor) { truncated = true; break; }
+      if (scanned >= requested) { truncated = true; break; }
+    }
+
+    const data = [...counts.keys()].sort((left, right) => left.localeCompare(right)).flatMap((name) => {
+      try {
+        const safeName = assertCollectionName(name, { maxBytes: limits.maxCollectionNameLength });
+        return [{
+          name: safeName,
+          record_count: counts.get(name),
+          ...(truncated ? { record_count_truncated: true } : {}),
+        }];
+      } catch (_) {
+        return [];
+      }
+    });
+    return Object.freeze({
+      data: Object.freeze(data),
+      order: 'name:asc',
+      scanned_keys: scanned,
+      truncated,
+    });
+  }
+
   return createDocumentDatabaseService({
     createDocument,
     getDocument,
@@ -1455,6 +1521,7 @@ export function createTelegramDocumentDatabase(env, {
     patchDocument,
     deleteDocument,
     listDocumentHistory,
+    listCollections,
   });
 }
 
