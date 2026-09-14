@@ -19,6 +19,7 @@ English|[中文](README-zh.md)
 - [Telegraph Cloud Document Database (Phases 2–3)](#telegraph-cloud-document-database-phases-23)
 - [Telegraph Cloud Projects and Developer API Keys (Phase 3)](#telegraph-cloud-projects-and-developer-api-keys-phase-3)
 - [Telegraph Cloud Object Storage (Phases 4–6B)](#telegraph-cloud-object-storage-phases-46b)
+- [Telegraph Cloud Console (Phase 7)](#telegraph-cloud-console-phase-7)
 - [Production Readiness and Operations (Phase 6C)](#production-readiness-and-operations-phase-6c)
 - [Limitations and Free Quotas](#limitations-and-free-quotas)
 - [How to Update if Already Deployed?](#how-to-update-if-already-deployed)
@@ -194,6 +195,12 @@ The admin area ships with a Material 3 sign-in screen at `/login`. After signing
 
 The legacy HTTP Basic scheme is still accepted as a deliberate fallback for scripts and `curl`, but the API no longer sends a `WWW-Authenticate` challenge, so browsers are never prompted with the native credential dialog — the GUI handles sign-in instead. Endpoints: `POST /api/manage/login` (JSON `{user,password}`), `POST /api/manage/logout`, and `GET /api/manage/session`. To front the dashboard with Cloudflare Access, protect both `/admin` and `/api/manage/*`.
 
+### Telegraph Cloud Console (Phase 7)
+
+After enabling the Cloud bindings (see [Telegraph Cloud foundations](#telegraph-cloud-foundations-database-projects-and-objects-phases-16b)), sign in and visit `/console`: a polished cloud console (Google Drive + Cloudflare/Supabase-style) that consumes the Phase 1–6C APIs without changing the backend. Global sections are **Overview / Projects / Documentation / Settings**; each project has **Overview, Drive, Database (Telegraph Database — a document database, never PostgreSQL), S3, API Keys, S3 Credentials, Connect, Settings**. The Drive shares the same object engine as `/api/storage/*` and `/s3/*`: drag-and-drop uploads with progress/retry, nested folders, rename, move, star, trash/restore, search/sort, grid/list, multi-select bulk actions, keyboard shortcuts, context menu, breadcrumbs, MIME-aware previews, a details drawer, and Direct URL/Markdown/HTML/BBCode/CSS snippets.
+
+Public, unlisted direct links are served read-only at `GET/HEAD /p/:projectId/:bucket/*key`; they work anonymously, trashing an object revokes its link, and there are no anonymous writes, presigned URLs, or per-file passwords. API keys (`tg_live_…`, Bearer) and S3 credentials (`tgsk_live_…`, SigV4) are managed separately, are scoped, and reveal their plaintext exactly once — never via localStorage, URLs, or logs. The S3 section lists only the operations the adapter actually implements. The legacy `/admin` workspace remains linked as **Legacy Media**, and `/file/*` links are untouched. The console is fully internationalized (English + Chinese on the existing `ti.lang` system), responsive, keyboard/screen-reader accessible, and reduced-motion aware. Full reference: [docs/telegraph-cloud-console.md](docs/telegraph-cloud-console.md).
+
 ### Upload Protection
 
 Uploads are public by default. To protect only the public upload endpoint, set both `UPLOAD_BASIC_USER` and `UPLOAD_BASIC_PASS`; the web page and API uploads will then require Basic Auth (see [Upload API](#upload-api) for API usage). When these two variables are not set, uploads remain public for compatibility with existing deployments.
@@ -368,7 +375,7 @@ Read the detailed [Phase 3 projects, credentials, isolation, consistency, and mi
 
 ## Telegraph Cloud Object Storage (Phases 4–6B)
 
-The experimental `/api/storage/:bucket` and `/api/storage/:bucket/:key` surfaces are a **project-scoped Telegram-backed generic object engine**, not full S3/R2 compatibility, a public file host, transactional/ACID storage, or an unlimited-performance service. A storage-scoped Bearer key chooses the project; a client `project_id` hint never chooses it. Raw bytes are uploaded as Telegram documents while `TELEGRAPH_CLOUD_KV` holds small repairable manifests, staged outboxes, revision indexes, and Phase 5 list indexes; Phase 5.1 repair checkpoints and Phase 6B outer S3 continuation tokens are encrypted self-contained values rather than KV records. Existing `/upload` and `/file/*` behavior remains independent and unchanged.
+The experimental `/api/storage/:bucket` and `/api/storage/:bucket/:key` surfaces are a **project-scoped Telegram-backed generic object engine**, not full S3/R2 compatibility, transactional/ACID storage, or an unlimited-performance service. Phase 7 adds one read-only public-delivery surface over this same engine — unlisted direct links at `GET/HEAD /p/:projectId/:bucket/*key` (anonymous reads; trashing revokes the link; no anonymous writes, listings, or presigned URLs) — see [Telegraph Cloud Console (Phase 7)](#telegraph-cloud-console-phase-7). A storage-scoped Bearer key chooses the project; a client `project_id` hint never chooses it. Raw bytes are uploaded as Telegram documents while `TELEGRAPH_CLOUD_KV` holds small repairable manifests, staged outboxes, revision indexes, and Phase 5 list indexes; Phase 5.1 repair checkpoints and Phase 6B outer S3 continuation tokens are encrypted self-contained values rather than KV records. Existing `/upload` and `/file/*` behavior remains independent and unchanged.
 
 | Method | Route | Scope | Purpose |
 | --- | --- | --- | --- |
