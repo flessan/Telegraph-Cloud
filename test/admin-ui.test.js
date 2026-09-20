@@ -20,6 +20,15 @@ const nuxtHtml = read('index-nuxt.html');
 const mdHtml = read('index-md.html');
 const landingJs = read('js/landing.js');
 const workspaceJs = read('js/workspace.js');
+// The workspace surface is the entry module plus the js/workspace/* modules
+// extracted from it; static guards that care about "the surface" should read
+// the whole graph.
+const workspaceGraphJs = [
+  workspaceJs,
+  ...fs.readdirSync(path.join(root, 'js/workspace'))
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => read(path.join('js/workspace', name))),
+].join('\n');
 const loginJs = read('js/login.js');
 
 function rule(css, selector) {
@@ -94,7 +103,7 @@ describe('canonical Telegraph Storage surfaces', () => {
       assert.ok(landingJs.includes("from './i18n.js'"));
       assert.ok(workspaceJs.includes("from './i18n.js'"));
       assert.ok(loginJs.includes("from './i18n.js'"));
-      for (const source of [landingJs, workspaceJs, loginJs]) {
+      for (const source of [landingJs, workspaceGraphJs, loginJs]) {
         assert.ok(source.includes("ti.prefs"), 'all surfaces must share ti.prefs');
       }
     });

@@ -32,20 +32,44 @@ import {
   parseRetryAfter,
   roundEtaMs,
 } from './push-queue.js';
-
-const PREFS_KEY = 'ti.prefs';
-const DB_NAME = 'ti-workspace';
-const DB_STORE = 'items';
-const DB_ALBUMS = 'albums';
-const DB_VERSION = 2;
-// Push spacing: one file at a time, with a short jittered gap between files so
-// a large batch does not turn into a burst. The two intervals are advanced
-// preferences (persisted with the other workspace prefs) rather than constants,
-// so a slow or strict host can be given more room without touching the code.
-const PUSH_DELAY_DEFAULT_MS = 1200;
-const PUSH_RETRY_BASE_DEFAULT_MS = 2000;
-const PUSH_JITTER = 0.25;
-const PUSH_MAX_RETRIES = 3;
+import {
+  DB_ALBUMS,
+  DB_NAME,
+  DB_STORE,
+  DB_VERSION,
+  PREFS_KEY,
+  PUSH_DELAY_DEFAULT_MS,
+  PUSH_JITTER,
+  PUSH_MAX_RETRIES,
+  PUSH_RETRY_BASE_DEFAULT_MS,
+  RECENT_MS,
+  REMOTE_PAGE_SIZE,
+  TEXT_PREVIEW_MAX,
+} from './workspace/constants.js';
+import {
+  idbAlbumDelete,
+  idbAlbumPut,
+  idbAlbumsAll,
+  idbAll,
+  idbDelete,
+  idbPut,
+  openDb,
+} from './workspace/db.js';
+import {
+  escapeHtml,
+  extOf,
+  formatDuration,
+  formatSize,
+  formatWhen,
+  isImage,
+  itemCategory,
+  itemTypeDetail,
+  itemTypeLabel,
+  statusLabel,
+  toRecord,
+  uid,
+} from './workspace/items.js';
+import { isTextPreviewable, previewTextSurface, setPreviewGuard } from './workspace/preview.js';
 
 function prefInterval(key, fallback, max) {
   const value = Number(loadPrefs()[key]);
@@ -53,13 +77,6 @@ function prefInterval(key, fallback, max) {
 }
 const pushDelayMs = () => prefInterval('pushDelayMs', PUSH_DELAY_DEFAULT_MS, 60000);
 const pushRetryBaseMs = () => prefInterval('pushRetryBaseMs', PUSH_RETRY_BASE_DEFAULT_MS, 60000);
-const RECENT_MS = 48 * 60 * 60 * 1000;
-const REMOTE_PAGE_SIZE = 100;
-// Text/code previews are read-only and never run as markup (content is written
-// through textContent), so they are safe. A size cap keeps a large log or data
-// file from being slurped into the DOM; bigger text falls back to the generic
-// surface plus Download.
-const TEXT_PREVIEW_MAX = 512 * 1024;
 
 const state = {
   items: [],
@@ -91,7 +108,10 @@ const state = {
   objectUrls: new Map(),
 };
 
-let dbPromise = null;
+// Preview loads may resolve after the user has moved on; the workspace
+// module vouches for which preview is still on screen.
+setPreviewGuard((item) => state.previewId === item.id);
+
 let toastTimer = null;
 let confirmResolver = null;
 let activeMenu = null;
@@ -104,7 +124,6 @@ let pushQueue = null;      // sequential upload queue (js/push-queue.js)
 let queueTicker = null;    // countdown/ETA ticker while a push is running
 let activeUpload = null;   // in-flight XHR, kept so state stays inspectable
 let stageSeq = 0;          // monotonic staging order, independent of the clock
-let textPreviewSeq = 0;    // invalidates stale async text-preview loads
 
 const $ = (id) => document.getElementById(id);
 
@@ -148,130 +167,6 @@ function applyTheme() {
   }
 }
 
-function uid() {
-  if (crypto && crypto.randomUUID) return crypto.randomUUID();
-  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-}
-
-function openDb() {
-  if (dbPromise) return dbPromise;
-  if (!('indexedDB' in window)) {
-    dbPromise = Promise.resolve(null);
-    return dbPromise;
-  }
-  dbPromise = new Promise((resolve) => {
-    let req;
-    try { req = indexedDB.open(DB_NAME, DB_VERSION); }
-    catch (_) { resolve(null); return; }
-    req.onerror = () => resolve(null);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(DB_STORE)) {
-        db.createObjectStore(DB_STORE, { keyPath: 'id' });
-      }
-      // v2 adds the local album catalog. Existing item records are untouched:
-      // they simply gain an optional albumId field the next time they are saved.
-      if (!db.objectStoreNames.contains(DB_ALBUMS)) {
-        db.createObjectStore(DB_ALBUMS, { keyPath: 'id' });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-  });
-  return dbPromise;
-}
-
-async function idbAll() {
-  const db = await openDb();
-  if (!db) return [];
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_STORE, 'readonly');
-    const req = tx.objectStore(DB_STORE).getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => resolve([]);
-  });
-}
-
-async function idbPut(item) {
-  const db = await openDb();
-  if (!db) return;
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).put(toRecord(item));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
-}
-
-async function idbDelete(id) {
-  const db = await openDb();
-  if (!db) return;
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
-}
-
-async function idbAlbumsAll() {
-  const db = await openDb();
-  if (!db || !db.objectStoreNames.contains(DB_ALBUMS)) return [];
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_ALBUMS, 'readonly');
-    const req = tx.objectStore(DB_ALBUMS).getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => resolve([]);
-  });
-}
-
-async function idbAlbumPut(album) {
-  const db = await openDb();
-  if (!db || !db.objectStoreNames.contains(DB_ALBUMS)) return;
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_ALBUMS, 'readwrite');
-    tx.objectStore(DB_ALBUMS).put(serializeAlbum(album));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
-}
-
-async function idbAlbumDelete(id) {
-  const db = await openDb();
-  if (!db || !db.objectStoreNames.contains(DB_ALBUMS)) return;
-  return new Promise((resolve) => {
-    const tx = db.transaction(DB_ALBUMS, 'readwrite');
-    tx.objectStore(DB_ALBUMS).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
-}
-
-function toRecord(item) {
-  const record = {
-    id: item.id,
-    name: item.name,
-    type: item.type,
-    size: item.size,
-    addedAt: item.addedAt,
-    seq: item.seq,
-    pushedAt: item.pushedAt,
-    status: item.status === 'pushing' ? 'pending' : item.status,
-    src: item.src,
-    url: item.url,
-    error: item.error,
-    width: item.width,
-    height: item.height,
-    albumId: item.albumId || null,
-    albumSynced: item.albumSynced !== false,
-    remoteId: item.remoteId || null,
-    remote: !!item.remote,
-    remoteMetadata: item.remoteMetadata || null,
-    blob: null,
-  };
-  if (item.status !== 'synced' && item.file) record.blob = item.file;
-  return record;
-}
-
 function rememberUrl(id, blob) {
   const prev = state.objectUrls.get(id);
   if (prev) URL.revokeObjectURL(prev);
@@ -292,71 +187,6 @@ function localPreview(item) {
     return item.previewUrl;
   }
   return item.url || '';
-}
-
-/**
- * Semantic category of a staged/synced object. `File.type` is authoritative
- * locally; the filename is only consulted when no MIME type was reported.
- */
-function itemCategory(item) {
-  if (!item) return CATEGORY.FILE;
-  if (!item._category) item._category = categorize({ mime: item.type, name: item.name });
-  return item._category;
-}
-
-function isImage(item) {
-  return itemCategory(item) === CATEGORY.IMAGE;
-}
-
-function extOf(name) {
-  const parts = String(name || '').split('.');
-  return parts.length > 1 ? parts.pop().toUpperCase().slice(0, 5) : 'FILE';
-}
-
-/**
- * A short, translated, human-friendly label for an object's kind, e.g.
- * "Image", "PDF document", "Archive". Falls back to "File" for anything
- * unrecognised. Used for the grid card meta line and the list "Type" column.
- */
-function itemTypeLabel(item) {
-  if (!item) return t('unknownType');
-  return t(categoryLabelKey(itemCategory(item)));
-}
-
-/** A slightly richer description used as hover detail for a file node. */
-function itemTypeDetail(item) {
-  if (!item) return '';
-  return item.type || String(itemTypeLabel(item));
-}
-
-function formatSize(bytes) {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return t('bytes', { n });
-  if (n < 1024 * 1024) return t('kb', { n: (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) });
-  if (n < 1024 * 1024 * 1024) return t('mb', { n: (n / 1024 / 1024).toFixed(2) });
-  return t('gb', { n: (n / 1024 / 1024 / 1024).toFixed(2) });
-}
-
-function formatWhen(ts) {
-  if (!ts) return t('noDimensions');
-  const delta = Date.now() - ts;
-  if (delta < 60 * 1000) return t('justNow');
-  if (delta < 60 * 60 * 1000) return t('minutesAgo', { n: Math.floor(delta / 60000) });
-  if (delta < 24 * 60 * 60 * 1000) return t('hoursAgo', { n: Math.floor(delta / 3600000) });
-  if (delta < 7 * 24 * 60 * 60 * 1000) return t('daysAgo', { n: Math.floor(delta / 86400000) });
-  try {
-    return new Date(ts).toLocaleString(getLanguage());
-  } catch (_) {
-    return new Date(ts).toLocaleString();
-  }
-}
-
-function statusLabel(status) {
-  if (status === 'pending') return t('statusPending');
-  if (status === 'pushing') return t('statusPushing');
-  if (status === 'synced') return t('statusSynced');
-  if (status === 'failed') return t('statusFailed');
-  return t('statusLocal');
 }
 
 /** Chip text for an item, preferring its live queue state during a push. */
@@ -431,81 +261,6 @@ function formatLink(item, format) {
   }, format);
 }
 
-/** Reads a local Blob/File as UTF-8 text; resolves null when it cannot. */
-function readFileText(blob) {
-  if (blob && typeof blob.text === 'function') {
-    return blob.text().then((text) => String(text), () => null);
-  }
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => resolve(null);
-    try { reader.readAsText(blob); } catch (_) { resolve(null); }
-  });
-}
-
-/**
- * Whether a file warrants an inline text/code preview: a genuine text-like
- * object that is small enough to read, and whose bytes are reachable (a staged
- * local file or a published remote URL). Images/audio/video/pdf keep their own
- * richer surfaces.
- */
-function isTextPreviewable(item) {
-  return itemCategory(item) === CATEGORY.TEXT
-    && Number(item.size || 0) <= TEXT_PREVIEW_MAX
-    && !!((item.file) || item.url);
-}
-
-/**
- * Read-only text/code surface. Content is always injected via `textContent`,
- * never innerHTML, so an untrusted file cannot inject markup or script into
- * the admin page. Oversized/unreadable files degrade to a caption plus the
- * dialog's Download action rather than a blank surface.
- */
-function previewTextSurface(item) {
-  const wrap = document.createElement('div');
-  wrap.className = 'preview-text';
-
-  const caption = document.createElement('p');
-  caption.className = 'preview-caption';
-  caption.setAttribute('role', 'status');
-  caption.textContent = t('previewTextLoading');
-  wrap.appendChild(caption);
-
-  const pre = document.createElement('pre');
-  pre.className = 'preview-text-body';
-  pre.setAttribute('aria-label', t('previewTextAria', { name: item.name }));
-  pre.tabIndex = 0;
-  wrap.appendChild(pre);
-
-  const token = ++textPreviewSeq;
-  (async () => {
-    let text;
-    if (item.file) {
-      text = await readFileText(item.file);
-    } else if (item.url) {
-      try {
-        const res = await fetch(item.url, { headers: { Accept: '*/*' }, cache: 'no-cache' });
-        text = res.ok ? await res.text() : null;
-      } catch (_) { text = null; }
-    } else {
-      text = null;
-    }
-    // The preview may have moved on (opened another file, closed) while the
-    // bytes were loading; only populate if this request is still current.
-    if (textPreviewSeq !== token || state.previewId !== item.id) return;
-    if (text == null) {
-      caption.textContent = t('previewTextFailed');
-      pre.remove();
-      return;
-    }
-    caption.remove();
-    pre.textContent = text === '' ? t('previewTextEmpty') : text;
-  })();
-
-  return wrap;
-}
-
 /** Clears the active search and re-renders, restoring the unfiltered view. */
 function clearSearch({ focus = false } = {}) {
   const search = $('search');
@@ -515,14 +270,6 @@ function clearSearch({ focus = false } = {}) {
   if (wrap) wrap.classList.remove('expanded');
   render();
   if (focus && search) search.focus();
-}
-
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 function isPendingLike(item) {
@@ -999,17 +746,6 @@ function stopQueueTicker() {
   if (!queueTicker) return;
   clearInterval(queueTicker);
   queueTicker = null;
-}
-
-function formatDuration(ms) {
-  const seconds = Math.max(1, Math.round(ms / 1000));
-  if (seconds < 60) return t('durationSeconds', { n: seconds });
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  if (minutes < 60) {
-    return rest ? t('durationMinutesSeconds', { m: minutes, s: rest }) : t('durationMinutes', { n: minutes });
-  }
-  return t('durationMinutes', { n: minutes });
 }
 
 function queuePhaseLabel(snapshot) {
