@@ -466,6 +466,11 @@ The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Cont
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 20, 2026 - Workspace modularization and console i18n catalog sync
+
+- Split the cohesive model/persistence clusters out of the 4,175-line `js/workspace.js` monolith into focused `js/workspace/` modules: `constants.js` (shared keys and limits), `items.js` (pure item model helpers and formatters), `db.js` (the IndexedDB layer for staged items and the local album catalog), and `preview.js` (the read-only text/code preview surface, decoupled from workspace state through an injected "still on screen" guard). The entry module keeps orchestration, state, and rendering; public behaviour is unchanged and the full behavioural DOM suite (485 tests) passes.
+- Synced the cloud console zh catalog with the collection-builder rework: the new empty-state and field-builder messages are translated and three stale keys are removed, so both console i18n guards pass again.
+
 September 13, 2026 - Telegraph Cloud Phase 6C Production Hardening
 
 - Added a minimal public `/api/health` signal, dashboard-authenticated enum-only `/api/projects/diagnostics` (including an opt-in no-detail Telegram `getMe` reachability probe), and fixed-metadata sampled operational tags. No diagnostic returns secrets, binding values, project internals, or Telegram identifiers.
