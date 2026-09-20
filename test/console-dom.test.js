@@ -124,9 +124,9 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.match(ctx.text(), /Telegraph Cloud/);
     assert.match(ctx.text(), /Overview/);
     // Legacy media compatibility link is preserved; the compatibility
-    // workspace now lives at /admin.html while /admin redirects to /console.
-    const legacy = ctx.all('a').find((a) => a.getAttribute('href') === '/admin.html');
-    assert.ok(legacy, 'links to the legacy /admin.html workspace');
+    // workspace now lives at /admin-legacy while /admin redirects to /console.
+    const legacy = ctx.all('a').find((a) => a.getAttribute('href') === '/admin-legacy.html');
+    assert.ok(legacy, 'links to the legacy /admin-legacy workspace');
   });
 
   it('renders the Drive and opens the inspector with real direct-link snippets', async function () {

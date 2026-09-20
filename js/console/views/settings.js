@@ -33,9 +33,9 @@ export function renderSettings(container) {
 
   container.append(h('div', { class: 'c-card', style: { marginTop: '14px' } }, [
     h('h2', { class: 'c-card-title' }, ct('Compatibility')),
-    h('p', { class: 'c-card-sub', style: { margin: 0 } }, ct('The legacy Telegraph-Image workspace (staged uploads, albums, whitelist/blacklist, moderation) is preserved as the compatibility entry at /admin.html. /admin now redirects here; legacy files and API contracts are unchanged.')),
+    h('p', { class: 'c-card-sub', style: { margin: 0 } }, ct('The legacy Telegraph-Image workspace (staged uploads, albums, whitelist/blacklist, moderation) is preserved as the compatibility entry at /admin-legacy. /admin now redirects here; legacy files and API contracts are unchanged.')),
     h('div', { style: { marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
-      h('a', { class: 'c-btn outlined', href: '/admin.html' }, ct('Open Legacy Media')),
+      h('a', { class: 'c-btn outlined', href: '/admin-legacy.html' }, ct('Open Legacy Media')),
       h('a', { class: 'c-btn outlined', href: '/' }, ct('Landing page')),
     ]),
   ]));

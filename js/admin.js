@@ -255,7 +255,7 @@ async function runAction(name, url, { method = 'GET', body } = {}) {
 
 /* ------------------------ session / auth ------------------------- */
 function handleSessionExpired() {
-  const next = encodeURIComponent('/admin');
+  const next = encodeURIComponent('/admin-legacy');
   // Preserve a one-time message across the redirect via sessionStorage.
   try { sessionStorage.setItem('ti.session-expired', '1'); } catch (_) { /* ignore */ }
   window.location.href = `/login?next=${next}`;

@@ -14,7 +14,7 @@ const appCss = read('css/app.css');
 const adminCss = read('css/admin.css');
 const workspaceCss = read('css/workspace.css');
 const indexHtml = read('index.html');
-const adminHtml = read('admin.html');
+const adminHtml = read('admin-legacy.html');
 const workspaceJs = read('js/workspace.js');
 
 const albumsJs = read('js/albums.js');

@@ -515,7 +515,7 @@ export const CONSOLE_ZH = Object.assign(Object.create(null), {
   'The file exceeds this deployment’s object size limit.': '文件超出了此部署的对象大小上限。',
   'The file inspector generates category-aware markup: <img> for images, <audio> for audio, <video> for video, plus Markdown, BBCode, and CSS for images. Non-image files never produce image markup.': '文件检查器会生成按类型区分的标记：图片用 <img>、音频用 <audio>、视频用 <video>，图片还提供 Markdown、BBCode 和 CSS。非图片文件绝不会生成图片标记。',
   'The file name contains unsupported characters.': '文件名包含不支持的字符。',
-  'The legacy Telegraph-Image workspace (staged uploads, albums, whitelist/blacklist, moderation) is preserved as the compatibility entry at /admin.html. /admin now redirects here; legacy files and API contracts are unchanged.': '旧版 Telegraph-Image 工作区（暂存上传、相册、白名单/黑名单、审核）作为兼容入口保留在 /admin.html。/admin 现在会重定向到此处；旧版文件与 API 契约不变。',
+  'The legacy Telegraph-Image workspace (staged uploads, albums, whitelist/blacklist, moderation) is preserved as the compatibility entry at /admin-legacy. /admin now redirects here; legacy files and API contracts are unchanged.': '旧版 Telegraph-Image 工作区（暂存上传、相册、白名单/黑名单、审核）作为兼容入口保留在 /admin-legacy。/admin 现在会重定向到此处；旧版文件与 API 契约不变。',
   'The object no longer exists.': '该对象已不存在。',
   'The objects are tombstoned in the object index. This cannot be undone from the console. Telegram journal history is retained by the storage provider.': '对象将在对象索引中被标记删除（墓碑）。无法在控制台中撤销。Telegram 日志历史由存储提供程序保留。',
   'The operation could not be completed.': '操作无法完成。',

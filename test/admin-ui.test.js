@@ -14,7 +14,7 @@ const appCss = read('css/app.css');
 const landingCss = read('css/landing.css');
 const workspaceCss = read('css/workspace.css');
 const indexHtml = read('index.html');
-const adminHtml = read('admin.html');
+const adminHtml = read('admin-legacy.html');
 const loginHtml = read('login.html');
 const nuxtHtml = read('index-nuxt.html');
 const mdHtml = read('index-md.html');
@@ -53,8 +53,8 @@ describe('canonical Telegraph Storage surfaces', () => {
       assert.ok(!/drag.{0,20}drop|upload queue/i.test(indexHtml), 'landing is not disguised as an upload surface');
     });
 
-    it('links the landing primary action to /admin and identifies the source', () => {
-      assert.ok(/class="btn landing-primary" href="\/admin"[^>]*>[\s\S]*?data-i18n="openDashboard"/.test(indexHtml));
+    it('links the landing primary action to /console and identifies the source', () => {
+      assert.ok(/class="btn landing-primary" href="\/console"[^>]*>[\s\S]*?data-i18n="openDashboard"/.test(indexHtml));
       assert.ok(/href="https:\/\/github\.com\/flessan\/Telegraph-Image"/.test(indexHtml));
       for (const key of ['landingStageTitle', 'landingReviewTitle', 'landingPushTitle', 'landingManageTitle']) {
         assert.ok(indexHtml.includes(`data-i18n="${key}"`), `landing is missing ${key}`);
@@ -67,12 +67,12 @@ describe('canonical Telegraph Storage surfaces', () => {
       assert.ok(loginHtml.includes('id="password"'));
       assert.ok(loginHtml.includes('/js/login.js'));
       assert.ok(!loginHtml.includes('id="file-input"'));
-      assert.ok(loginJs.includes(": '/admin'"), 'successful login defaults to the dashboard');
+      assert.ok(loginJs.includes(": '/console'"), 'successful login defaults to the canonical console');
       assert.ok(loginJs.includes("fetch('/api/manage/login'"), 'credentials use the existing session endpoint');
     });
 
     it('makes /admin the one complete storage workspace', () => {
-      assert.strictEqual(canonical(adminHtml), '/admin');
+      assert.strictEqual(canonical(adminHtml), '/admin-legacy');
       assert.ok(adminHtml.includes('/css/workspace.css'));
       assert.ok(adminHtml.includes('/js/workspace.js'));
       assert.ok(!adminHtml.includes('/js/admin.js'), 'the obsolete remote-only controller must not also boot');
@@ -92,7 +92,7 @@ describe('canonical Telegraph Storage surfaces', () => {
 
   describe('shared design and preferences', () => {
     it('loads the shared design foundation on every canonical page', () => {
-      for (const [name, html] of [['index.html', indexHtml], ['login.html', loginHtml], ['admin.html', adminHtml]]) {
+      for (const [name, html] of [['index.html', indexHtml], ['login.html', loginHtml], ['admin-legacy.html', adminHtml]]) {
         assert.ok(html.includes('/css/app.css'), `${name} must load app.css`);
       }
       assert.ok(/^\.brand-mark\s*\{/m.test(appCss));
