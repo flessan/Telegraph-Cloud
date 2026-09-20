@@ -6,6 +6,8 @@ import { CloudConfigurationError } from './errors.js';
 export const DOCUMENT_DATABASE_METHODS = Object.freeze([
   'createCollection',
   'getCollection',
+  'patchCollection',
+  'deleteCollection',
   'createDocument',
   'getDocument',
   'listDocuments',
@@ -45,6 +47,8 @@ export function createDocumentDatabaseService(adapter) {
   return Object.freeze({
     createCollection: (...args) => implementation.createCollection(...args),
     getCollection: (...args) => implementation.getCollection(...args),
+    patchCollection: (...args) => implementation.patchCollection(...args),
+    deleteCollection: (...args) => implementation.deleteCollection(...args),
     createDocument: (...args) => implementation.createDocument(...args),
     getDocument: (...args) => implementation.getDocument(...args),
     listDocuments: (...args) => implementation.listDocuments(...args),
