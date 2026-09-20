@@ -4,6 +4,8 @@ import { CloudConfigurationError } from './errors.js';
 // a document adapter and Phase 4 supplies a Telegram object adapter. Both keep
 // Telegram details out of HTTP handlers.
 export const DOCUMENT_DATABASE_METHODS = Object.freeze([
+  'createCollection',
+  'getCollection',
   'createDocument',
   'getDocument',
   'listDocuments',
@@ -41,6 +43,8 @@ function assertAdapter(adapter, methods, name) {
 export function createDocumentDatabaseService(adapter) {
   const implementation = assertAdapter(adapter, DOCUMENT_DATABASE_METHODS, 'Document database');
   return Object.freeze({
+    createCollection: (...args) => implementation.createCollection(...args),
+    getCollection: (...args) => implementation.getCollection(...args),
     createDocument: (...args) => implementation.createDocument(...args),
     getDocument: (...args) => implementation.getDocument(...args),
     listDocuments: (...args) => implementation.listDocuments(...args),
