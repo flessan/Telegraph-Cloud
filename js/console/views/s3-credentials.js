@@ -18,12 +18,22 @@ function base(projectId) {
 
 export async function renderS3Credentials(container, projectId) {
   container.append(pageHead(ct('S3 credentials'), ct('Access key pairs for AWS Signature Version 4 (S3). These are separate from Bearer API keys and never access the document API.'), [
-    h('button', { class: 'c-btn outlined', onClick: () => navigate(projectPath(projectId, 's3')) }, ct('S3 endpoint')),
-    h('button', { class: 'c-btn primary', onClick: createDialog }, ct('Create credentials')),
+    h('button', { class: 'c-btn outlined', onClick: () => navigate(projectPath(projectId, 'files', 's3')) }, ct('S3 endpoint')),
   ]));
-
   const body = h('div');
   container.append(body);
+  await renderS3CredentialsPanel(body, projectId);
+}
+
+// Credential management panel, embedded in Files > S3 as well as the
+// standalone legacy view. Renders the header row with the create action
+// plus the credential table into the given container.
+export async function renderS3CredentialsPanel(container, projectId) {
+  container.append(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px', flexWrap: 'wrap' } }, [
+    h('h2', { style: { margin: 0, fontSize: '15px' } }, ct('S3 credentials')),
+    h('button', { class: 'c-btn primary', onClick: createDialog }, ct('Create credentials')),
+  ]));
+  const body = container;
   await load();
 
   async function load() {

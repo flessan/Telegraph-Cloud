@@ -30,7 +30,7 @@ function plainObject(value) {
 
 function assertView(value) {
   if (value === undefined || value === null || value === 'all') return 'all';
-  if (value === 'trash' || value === 'starred') return value;
+  if (value === 'trash' || value === 'starred' || value === 'objects') return value;
   throw new CloudValidationError('invalid_drive_view', 'Unsupported Drive view.');
 }
 
@@ -112,6 +112,8 @@ export function createDriveService(contextEnv, {
     const prefix = input.prefix === undefined || input.prefix === null ? '' : assertObjectKeyPrefix(input.prefix);
     const view = assertView(input.view);
     const search = assertSearchTerm(input.search);
+    // 'objects' is the flat, object-centric listing (the console's Files >
+    // Objects tab): every non-trashed object as a full key, no folders.
     const flat = view !== 'all' || search !== '';
 
     const flagsRecords = await state.listFlagRecords(projectId, bucket);
@@ -195,6 +197,7 @@ export function createDriveService(contextEnv, {
         const flags = flagsRecords.get(keyHash);
         if (view === 'trash' && !flags?.trashed) continue;
         if (view === 'starred' && !flags?.starred) continue;
+        if (view === 'objects' && flags?.trashed) continue;
         if (needle) {
           const haystack = `${object.key}\n${baseName(object.key)}`.toLowerCase();
           if (!haystack.includes(needle)) continue;

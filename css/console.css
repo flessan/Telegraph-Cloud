@@ -823,3 +823,10 @@ table.c-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
   .c-spinner { animation-duration: 2s; }
 }
+
+/* Section sub-tabs (Data / Files / API). */
+.c-subtabs { display: flex; gap: 4px; margin: 14px 0 16px; border-bottom: 1px solid var(--c-border); }
+.c-subtab { padding: 8px 14px 10px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--c-text-2); font: 600 13.5px/1.2 var(--c-font, inherit); text-decoration: none; cursor: pointer; border-radius: var(--c-radius-sm) var(--c-radius-sm) 0 0; transition: color 160ms ease, border-color 160ms ease; }
+.c-subtab:hover { color: var(--c-text-1); }
+.c-subtab.is-active { color: var(--c-primary); border-bottom-color: var(--c-primary); }
+.c-subtab:focus-visible { outline: 2px solid var(--c-primary); outline-offset: -2px; }

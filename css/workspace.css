@@ -1631,3 +1631,21 @@ a.preview-caption { text-decoration: underline; }
   .file-card, .list-row { transition: none; }
   .file-card:hover { transform: none; }
 }
+
+/* Compatibility banner on the preserved legacy workspace (/admin.html). */
+.legacy-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 9px 16px;
+  background: color-mix(in srgb, var(--md-sys-color-primary) 9%, var(--md-sys-color-surface-container));
+  border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 22%, transparent);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: .8rem;
+  line-height: 1.45;
+}
+.legacy-banner a { color: var(--md-sys-color-primary); font-weight: 700; text-decoration: none; }
+.legacy-banner a:hover { text-decoration: underline; }
