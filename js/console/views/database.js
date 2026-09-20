@@ -42,13 +42,13 @@ export async function renderDatabase(container, projectId, query) {
     clear(sidebar);
     sidebar.append(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '2px 4px 8px' } }, [
       h('strong', { style: { fontSize: '13px' } }, ct('Collections')),
-      h('button', { class: 'c-icon-button', title: ct('New collection (via first record)'), 'aria-label': ct('New collection'), onClick: () => recordDialog(null) }, [
+      h('button', { class: 'c-icon-button', title: ct('New collection'), 'aria-label': ct('New collection'), onClick: () => collectionDialog() }, [
         h('span', { html: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>' }),
       ]),
     ]));
     const list = h('div', { class: 'c-collection-list', role: 'list' });
     if (!collections.length) {
-      list.append(h('p', { style: { color: 'var(--c-text-3)', fontSize: '12.5px', padding: '8px 10px', margin: 0 } }, ct('No collections yet. Create one by adding a record.')));
+      list.append(h('p', { style: { color: 'var(--c-text-3)', fontSize: '12.5px', padding: '8px 10px', margin: 0 } }, ct('No collections yet. Create one to start adding records.')));
     }
     for (const collection of collections) {
       list.append(h('button', {
@@ -72,8 +72,8 @@ export async function renderDatabase(container, projectId, query) {
       emptyState({
         icon: 'db',
         title: ct('Select a collection'),
-        body: ct('Choose a collection to browse its records, or create a record to start a new collection.'),
-        actions: [h('button', { class: 'c-btn primary', onClick: () => recordDialog(null) }, ct('New record'))],
+        body: ct('Create a collection first, then add records and expose it through the document API.'),
+        actions: [h('button', { class: 'c-btn primary', onClick: () => collectionDialog() }, ct('New collection'))],
       }),
     ]));
   }
@@ -188,6 +188,87 @@ export async function renderDatabase(container, projectId, query) {
         h('button', { class: 'c-btn outlined sm', disabled: loading, onClick: () => loadRecords(true) }, ct('Load more')),
       ]));
     }
+  }
+
+  function collectionDialog() {
+    let fields = [
+      { name: 'name', type: 'text', required: true },
+      { name: 'description', type: 'text', required: false },
+    ];
+    const nameInput = h('input', { class: 'c-input', type: 'text', placeholder: 'products', pattern: '[a-z][a-z0-9_-]*' });
+    const descriptionInput = h('textarea', { class: 'c-input', rows: 3, placeholder: ct('Optional description') });
+    const fieldsWrap = h('div', { style: { display: 'grid', gap: '8px' } });
+
+    function renderFields() {
+      clear(fieldsWrap);
+      fields.forEach((field, index) => {
+        const name = h('input', { class: 'c-input', type: 'text', value: field.name, placeholder: 'field_name', oninput: (e) => { field.name = e.target.value.trim(); } });
+        const type = h('select', { class: 'c-input', value: field.type, onchange: (e) => { field.type = e.target.value; } }, [
+          ...['text', 'number', 'boolean', 'datetime', 'json', 'file', 'select'].map((value) => h('option', { value, ...(value === field.type ? { selected: true } : {}) }, value)),
+        ]);
+        const required = h('input', { type: 'checkbox', checked: field.required, onchange: (e) => { field.required = e.target.checked; } });
+        fieldsWrap.append(h('div', { class: 'c-card', style: { padding: '10px', display: 'grid', gridTemplateColumns: '1fr 150px auto auto', gap: '8px', alignItems: 'center' } }, [
+          name, type,
+          h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '12px' } }, [required, ct('Required')]),
+          h('button', { class: 'c-icon-button', 'aria-label': ct('Remove field'), onClick: () => { fields.splice(index, 1); renderFields(); } }, [
+            h('span', { html: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>' }),
+          ]),
+        ]));
+      });
+    }
+    renderFields();
+
+    const errorEl = h('span', { class: 'c-field-error', role: 'alert' });
+    const save = async (close) => {
+      errorEl.textContent = '';
+      const name = nameInput.value.trim();
+      if (!/^[a-z][a-z0-9_-]*$/.test(name)) {
+        errorEl.textContent = ct('Collection names start with a lowercase letter and contain only letters, numbers, underscore, or hyphen.');
+        return false;
+      }
+      const cleanFields = fields.filter((field) => field.name).map((field) => ({
+        name: field.name,
+        type: field.type,
+        required: !!field.required,
+      }));
+      try {
+        await api.post(dbBase(projectId) + '/collections', {
+          name,
+          description: descriptionInput.value.trim(),
+          fields: cleanFields,
+        });
+        toast(ct('Collection created'), { kind: 'success' });
+        close();
+        selected = name;
+        await loadCollections(name);
+      } catch (error) {
+        errorEl.textContent = error.code === 'collection_exists' ? ct('A collection with this name already exists.') : (error.message || error.code);
+        return false;
+      }
+    };
+
+    openDialog({
+      title: ct('New collection'),
+      subtitle: ct('Define the collection before adding records.'),
+      size: 'lg',
+      body: [
+        h('label', { class: 'c-field' }, [h('span', { class: 'c-field-label' }, ct('Collection name')), nameInput]),
+        h('label', { class: 'c-field' }, [h('span', { class: 'c-field-label' }, ct('Description')), descriptionInput]),
+        h('div', {}, [
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } }, [
+            h('strong', {}, ct('Fields')),
+            h('button', { class: 'c-btn outlined sm', onClick: () => { fields.push({ name: 'field_' + (fields.length + 1), type: 'text', required: false }); renderFields(); } }, ct('+ Add field')),
+          ]),
+          fieldsWrap,
+        ]),
+        errorEl,
+      ],
+      actions: [
+        { label: ct('Cancel'), variant: 'outlined' },
+        { label: ct('Create collection'), variant: 'primary', onClick: save, keepOpen: true },
+      ],
+    });
+    setTimeout(() => nameInput.focus(), 40);
   }
 
   function recordDialog(existing) {
