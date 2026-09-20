@@ -38,6 +38,7 @@ export const DOCUMENT_INDEX_NAMESPACES = Object.freeze({
   revision: 'db-revision',
   outbox: 'db-outbox',
   collection: 'db-collection',
+  collectionMeta: 'db-collection-meta',
   filter: 'db-filter',
 });
 
@@ -543,6 +544,42 @@ function normalizeOutbox(value, expectedProjectId = null) {
     if (error?.code === 'cloud_index_invalid_record') throw error;
     throw storedStateFailure();
   }
+}
+
+function normalizeCollectionDefinition(value, limits) {
+  if (!plainObject(value)) throw new CloudValidationError('invalid_collection_definition', 'Collection definition must be an object.');
+  const name = assertCollectionName(value.name, { maxBytes: limits.maxCollectionNameLength });
+  const description = value.description === undefined ? '' : String(value.description);
+  if (utf8ByteLength(description) > 1000) {
+    throw new CloudValidationError('invalid_collection_description', 'Collection description is too long.');
+  }
+  const rawFields = value.fields === undefined ? [] : value.fields;
+  if (!Array.isArray(rawFields) || rawFields.length > 100) {
+    throw new CloudValidationError('invalid_collection_fields', 'Collection fields are invalid.');
+  }
+  const allowedTypes = new Set(['text', 'number', 'boolean', 'datetime', 'json', 'file', 'select']);
+  const fields = rawFields.map((field) => {
+    if (!plainObject(field)) throw new CloudValidationError('invalid_collection_field', 'Collection field is invalid.');
+    const fieldName = typeof field.name === 'string' ? field.name.trim() : '';
+    if (!/^[a-z][a-z0-9_]*$/.test(fieldName) || RESERVED_DOCUMENT_FIELDS.has(fieldName)) {
+      throw new CloudValidationError('invalid_collection_field', 'Collection field name is invalid.');
+    }
+    const type = String(field.type || 'text');
+    if (!allowedTypes.has(type)) throw new CloudValidationError('invalid_collection_field_type', 'Collection field type is invalid.');
+    return {
+      name: fieldName,
+      type,
+      required: Boolean(field.required),
+      ...(field.default !== undefined ? { default: clone(field.default) } : {}),
+      ...(type === 'select' && Array.isArray(field.options) ? { options: field.options.map(String).slice(0, 100) } : {}),
+    };
+  });
+  const names = new Set();
+  for (const field of fields) {
+    if (names.has(field.name)) throw new CloudValidationError('duplicate_collection_field', 'Collection field names must be unique.');
+    names.add(field.name);
+  }
+  return { schema: 'telegraph-cloud.collection.v1', name, description, fields };
 }
 
 function normalizeExpectedVersion(value) {
@@ -1225,6 +1262,21 @@ export function createTelegramDocumentDatabase(env, {
     };
   }
 
+  async function getCollection(collectionInput) {
+    const collection = assertCollectionName(collectionInput, { maxBytes: limits.maxCollectionNameLength });
+    const stored = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, collection);
+    if (!stored) throw new CloudNotFoundError();
+    return normalizeCollectionDefinition(stored, limits);
+  }
+
+  async function createCollection(input) {
+    const definition = normalizeCollectionDefinition(input, limits);
+    const existing = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, definition.name);
+    if (existing) throw new CloudConflictError('collection_exists', 'A collection with this name already exists.');
+    await putIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, [definition.name], definition);
+    return { status: 201, body: definition };
+  }
+
   async function createDocument(collectionInput, documentInput, { idempotencyKey } = {}) {
     const collection = assertCollectionName(collectionInput, { maxBytes: limits.maxCollectionNameLength });
     const document = normalizeUserDocument(documentInput, limits);
@@ -1462,16 +1514,26 @@ export function createTelegramDocumentDatabase(env, {
     if (!Number.isSafeInteger(requested) || requested < 1 || requested > hardCap) {
       throw new CloudValidationError('invalid_collection_scan_limit', 'Collection scan limit is invalid.');
     }
+
+    const data = [];
+    const metadataPage = await listIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, { limit: Math.min(requested, 1000) });
+    for (const entry of (metadataPage.keys || [])) {
+      const name = String(entry?.name || '').split(':').pop();
+      if (!name) continue;
+      const definition = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, name);
+      if (!definition) continue;
+      data.push({ ...normalizeCollectionDefinition(definition, limits), record_count: 0 });
+    }
+
     const scopeSegments = projectScope === null ? [] : [projectScope];
-    const basePrefix = `${cloudIndex.key(DOCUMENT_INDEX_NAMESPACES.collection, ...scopeSegments)}:`;
+    const basePrefix = [cloudIndex.key(DOCUMENT_INDEX_NAMESPACES.collection), ...scopeSegments].join(':') + ':';
     const counts = new Map();
     let cursor;
     let scanned = 0;
     let truncated = false;
-
     while (scanned < requested) {
       const page = await listIndex(DOCUMENT_INDEX_NAMESPACES.collection, {
-        prefixSegments: scopeSegments,
+        prefixSegments: [],
         limit: Math.min(1000, requested - scanned),
         ...(cursor ? { cursor } : {}),
       });
@@ -1484,37 +1546,32 @@ export function createTelegramDocumentDatabase(env, {
         const remainder = name.slice(basePrefix.length);
         const separator = remainder.indexOf(':');
         const collection = separator === -1 ? remainder : remainder.slice(0, separator);
-        if (!collection) continue;
-        counts.set(collection, (counts.get(collection) || 0) + 1);
+        if (collection) counts.set(collection, (counts.get(collection) || 0) + 1);
       }
       scanned += page.keys.length;
-      if (page.list_complete) { cursor = undefined; break; }
+      if (page.list_complete) break;
       cursor = page.cursor;
       if (!cursor) { truncated = true; break; }
-      if (scanned >= requested) { truncated = true; break; }
     }
 
-    const data = [...counts.keys()].sort((left, right) => left.localeCompare(right)).flatMap((name) => {
-      try {
-        const safeName = assertCollectionName(name, { maxBytes: limits.maxCollectionNameLength });
-        return [{
-          name: safeName,
-          record_count: counts.get(name),
-          ...(truncated ? { record_count_truncated: true } : {}),
-        }];
-      } catch (_) {
-        return [];
+    for (const [name, count] of counts.entries()) {
+      const existing = data.find((item) => item.name === name);
+      if (existing) existing.record_count = count;
+      else {
+        try {
+          const safeName = assertCollectionName(name, { maxBytes: limits.maxCollectionNameLength });
+          data.push({ schema: 'telegraph-cloud.collection.v1', name: safeName, description: '', fields: [], record_count: count });
+        } catch (_) { /* ignore corrupt legacy collection key */ }
       }
-    });
-    return Object.freeze({
-      data: Object.freeze(data),
-      order: 'name:asc',
-      scanned_keys: scanned,
-      truncated,
-    });
+    }
+    data.sort((left, right) => left.name.localeCompare(right.name));
+    if (truncated) for (const item of data) item.record_count_truncated = true;
+    return Object.freeze({ data: Object.freeze(data), order: 'name:asc', scanned_keys: scanned, truncated });
   }
 
   return createDocumentDatabaseService({
+    createCollection,
+    getCollection,
     createDocument,
     getDocument,
     listDocuments,
