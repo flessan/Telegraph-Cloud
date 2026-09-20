@@ -35,11 +35,13 @@ const svg = {
 // Labels are thunks so their literal source messages stay statically
 // extractable (the i18n coverage test scans for ct calls with literal
 // first arguments) and language switches retranslate the chrome on re-render.
+// Global navigation is exactly three items (Overview, Projects,
+// Documentation) per the canonical IA. Console preferences live behind the
+// topbar settings button (#/settings), which remains a working deep link.
 const GLOBAL_ITEMS = [
   { route: 'overview', hash: '#/overview', label: () => ct('Overview'), icon: svg.overview },
   { route: 'projects', hash: '#/projects', label: () => ct('Projects'), icon: svg.projects },
   { route: 'docs', hash: '#/docs', label: () => ct('Documentation'), icon: svg.docs },
-  { route: 'settings', hash: '#/settings', label: () => ct('Settings'), icon: svg.settings },
 ];
 
 // Canonical project information architecture:
@@ -214,6 +216,13 @@ function setupChrome() {
         { title: t('langId'), onClick: () => setLanguage('id') },
       ]);
     });
+  });
+
+  // Console preferences (appearance, language, compatibility links). Global
+  // Settings is intentionally not a sidebar item; this topbar button is its
+  // discoverable entry point and #/settings stays a valid deep link.
+  $('#c-console-settings-btn').addEventListener('click', () => {
+    navigate('#/settings');
   });
 
   $('#c-menu-toggle').addEventListener('click', () => {

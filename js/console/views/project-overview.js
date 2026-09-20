@@ -26,7 +26,7 @@ export async function renderProjectOverview(container, projectId) {
     badge(project.status, project.status === 'active' ? 'active' : 'disabled'),
     copyButton(project.project_id, { label: ct('Copy project ID'), message: ct('Project ID copied') }),
     h('a', { class: 'c-btn outlined', href: projectPath(projectId, 'connect') }, ct('Connect')),
-    h('a', { class: 'c-btn primary', href: projectPath(projectId, 'drive') }, ct('Open Drive')),
+    h('a', { class: 'c-btn primary', href: projectPath(projectId, 'files', 'drive') }, ct('Open Files')),
   ]));
 
   const meta = h('p', { class: 'c-page-sub', style: { margin: '-10px 0 18px' } },
@@ -48,13 +48,13 @@ export async function renderProjectOverview(container, projectId) {
 
   container.append(h('div', { class: 'c-section' }, [
     h('div', { class: 'c-section-head' }, [h('h2', { class: 'c-section-title' }, ct('Resources'))]),
+    // Canonical project IA: Data | Files | API | Connect | Settings.
     h('div', { class: 'c-grid cols-3' }, [
-      resourceTile({ title: ct('Drive'), body: ct('Browse, upload, and organize files and folders with direct links.'), to: projectPath(projectId, 'drive') }),
-      resourceTile({ title: ct('Database'), body: ct('Collections and versioned JSON documents with a document API.'), to: projectPath(projectId, 'database') }),
-      resourceTile({ title: ct('S3'), body: ct('SigV4 S3-compatible object endpoint over the same objects.'), to: projectPath(projectId, 's3') }),
-      resourceTile({ title: ct('API Keys'), body: ct('Bearer keys for the document and object APIs.'), to: projectPath(projectId, 'keys') }),
-      resourceTile({ title: ct('S3 Credentials'), body: ct('Access key IDs and secrets for S3 clients.'), to: projectPath(projectId, 's3-credentials') }),
+      resourceTile({ title: ct('Files'), body: ct('Browse, upload, and organize files and folders with direct links.'), to: projectPath(projectId, 'files', 'drive') }),
+      resourceTile({ title: ct('Data'), body: ct('Collections and versioned JSON documents with a document API.'), to: projectPath(projectId, 'data') }),
+      resourceTile({ title: ct('API'), body: ct('Bearer keys for the document and object APIs.'), to: projectPath(projectId, 'api', 'keys') }),
       resourceTile({ title: ct('Connect'), body: ct('.env, curl, and JSON setup snippets for your app.'), to: projectPath(projectId, 'connect') }),
+      resourceTile({ title: ct('Settings'), body: ct('Project names are display labels; the ID and slug are stable references.'), to: projectPath(projectId, 'settings') }),
     ]),
   ]));
 

@@ -231,13 +231,40 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     ctx = await bootConsole({ language: 'zh' });
     assert.deepStrictEqual(ctx.errors, []);
     const navText = ctx.doc.getElementById('c-global-nav').textContent;
-    for (const zh of ['概览', '项目', '文档', '设置']) {
+    for (const zh of ['概览', '项目', '文档']) {
       assert.ok(navText.includes(zh), `nav translated (${zh}): ${navText}`);
     }
-    // The four English global nav labels must not remain.
+    // The English global nav labels must not remain.
     assert.ok(!/(^|\W)(Overview|Documentation|Settings)(\W|$)/.test(navText), navText);
     // Static chrome retranslates too.
     assert.ok(ctx.doc.getElementById('c-legacy-link').textContent.includes('旧版媒体'));
+    // Console settings stay reachable through the topbar gear.
+    assert.ok(ctx.doc.getElementById('c-console-settings-btn'), 'topbar settings button exists');
+  });
+
+  it('follows the canonical IA: three global sections, six project sections', async function () {
+    ctx = await bootConsole();
+    // Global sidebar is exactly Overview, Projects, Documentation — no
+    // global Settings item (preferences live behind the topbar gear).
+    const globalLabels = Array.from(ctx.doc.querySelectorAll('#c-global-nav .c-nav-item > span:last-child'))
+      .map((el) => el.textContent);
+    assert.deepStrictEqual(globalLabels, ['Overview', 'Projects', 'Documentation']);
+
+    // Inside a project the sidebar lists the canonical sections in order.
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/files?tab=drive`);
+    const projectLabels = Array.from(ctx.doc.querySelectorAll('#c-project-nav .c-nav-item > span:last-child'))
+      .map((el) => el.textContent);
+    assert.deepStrictEqual(projectLabels, ['Overview', 'Data', 'Files', 'API', 'Connect', 'Settings']);
+
+    // The canonical files route renders the Drive surface.
+    assert.ok(ctx.text().includes('logo.png'), 'Drive renders under /files?tab=drive');
+
+    // Legacy deep-link slugs still resolve to the canonical sections.
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/drive`);
+    assert.ok(ctx.text().includes('logo.png'), 'legacy /drive deep link still works');
+
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/api`);
+    assert.ok(ctx.text().includes('Endpoints'), 'canonical /api section renders');
   });
 
   it('documents the document database honestly (never PostgreSQL) on the DB view', async function () {

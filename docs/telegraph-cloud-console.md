@@ -8,40 +8,49 @@ it introduces no SQL database.
 
 - Entry point: `/console` (served from `console.html`; bare `/console.html`
   redirects to the canonical `/console` URL).
-- Legacy workspace: `/admin` keeps every existing workflow and route, linked
-  from the console sidebar as **Legacy Media**. Existing `/file/*` links and
-  the legacy upload pipeline are untouched.
+- Legacy workspace: the legacy media workflows live at `/admin-legacy`
+  (pretty URL for `admin-legacy.html`), linked from the console sidebar as
+  **Legacy Media**. `/admin` is a compatibility entry point that redirects
+  into `/console`. Existing `/file/*` links and the legacy upload pipeline are
+  untouched.
 - No backend architecture was rewritten. The console is a consumer of the
   Phase 1–6C HTTP APIs, plus the small additions listed under "Backend
   additions" below.
 
 ## Information architecture
 
-Global sections (no project selected):
+The console is the single canonical management UI. Global sections (no
+project selected):
 
 | Section | Contents |
 | --- | --- |
 | Overview | Deployment-wide summary drawn from real project/object metrics only |
 | Projects | Create, open, rename, and deactivate projects; slug and status |
 | Documentation | This product's model, endpoints, credentials, and honest limitations |
-| Settings | Console appearance, language, and the link back to Legacy Media |
+
+Console preferences (theme, language, and compatibility links to the legacy
+workspace and landing page) live behind the topbar settings button; the
+`#/settings` deep link keeps working for existing bookmarks.
 
 Per-project sections (project id comes from the verified session/URL scope):
 
 | Section | Contents |
 | --- | --- |
 | Overview | Project scopes, counts from real stats endpoints, quick links |
-| Drive | Buckets, folders (prefixes), uploads, search, trash/star, details drawer |
-| Database | Telegraph Database collections, JSON records, revision metadata |
-| S3 | Real S3 capability matrix and endpoint details (no invented features) |
-| API Keys | `tg_live_…` Bearer developer keys with `db:`/`storage:` scopes |
-| S3 Credentials | `tgsk_live_…` SigV4 credentials with `s3:read`/`s3:write` |
+| Data | Telegraph Database collections, JSON records, revision metadata, schemas |
+| Files | Drive (folders, uploads, trash/star), flat objects list, and the S3 endpoint + SigV4 credentials — one object engine, three surfaces |
+| API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, request explorer, generated documentation links |
 | Connect | Per-project `.env`, cURL, and client examples generator |
 | Settings | Project name/slug/status and legacy workspace link |
 
+Pre-rework deep links keep working: `drive` → `files?tab=drive`,
+`database` → `data?tab=collections`, `s3`/`s3-credentials` → `files?tab=s3`,
+and `keys` → `api?tab=keys`.
+
 Legacy Media (old uploads, the push queue, albums, whitelist/blacklist,
-moderation, short URLs, legacy R2/Telegram serving) stays under `/admin`.
-Legacy routes were preserved, not ported or deleted.
+moderation, short URLs, legacy R2/Telegram serving) stays at `/admin-legacy`
+and is reached from the console sidebar footer. `/admin` redirects into
+`/console`. Legacy routes were preserved, not ported or deleted.
 
 ## Drive
 

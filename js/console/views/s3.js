@@ -1,7 +1,6 @@
 import { h } from '../util.js';
 import { api } from '../api.js';
 import { pageHead } from '../ui.js';
-import { navigate, projectPath } from '../router.js';
 import { ct } from '../i18n.js';
 import { copyButton } from './common.js';
 
@@ -17,9 +16,9 @@ export async function renderS3(container, projectId) {
   const region = 'us-east-1';
   const service = 's3';
 
-  container.append(pageHead(ct('S3-compatible storage'), ct('The same object engine behind Drive, reachable with AWS Signature Version 4. This is a deliberately scoped endpoint, not a full AWS clone.'), [
-    h('button', { class: 'c-btn outlined', onClick: () => navigate(projectPath(projectId, 's3-credentials')) }, ct('Manage S3 credentials')),
-  ]));
+  container.append(pageHead(ct('S3-compatible storage'), ct('The same object engine behind Drive, reachable with AWS Signature Version 4. This is a deliberately scoped endpoint, not a full AWS clone.')));
+  // S3 credentials are managed by the panel rendered directly below this view
+  // (Files → S3 tab), so no cross-link button is needed here anymore.
 
   let credentials = [];
   try {

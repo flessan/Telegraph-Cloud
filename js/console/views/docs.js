@@ -65,7 +65,7 @@ GET /api/db/users?role=admin&limit=50`),
   ]);
 
   section(ct('Legacy media'), [
-    p(ct('The original workspace at /admin remains: staged uploads, push queue, albums, whitelist/blacklist, moderation, short URLs, and R2/Telegram legacy serving. It is a compatibility area and keeps all existing workflows and public links.')),
+    p(ct('The original workspace remains at /admin-legacy (/admin redirects into this console): staged uploads, push queue, albums, whitelist/blacklist, moderation, short URLs, and R2/Telegram legacy serving. It is a compatibility area and keeps all existing workflows and public links.')),
   ]);
 
   function section(title, children) {
