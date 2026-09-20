@@ -191,10 +191,7 @@ export async function renderDatabase(container, projectId, query) {
   }
 
   function collectionDialog() {
-    let fields = [
-      { name: 'name', type: 'text', required: true },
-      { name: 'description', type: 'text', required: false },
-    ];
+    let fields = [];
     const nameInput = h('input', { class: 'c-input', type: 'text', placeholder: 'products', pattern: '[a-z][a-z0-9_-]*' });
     const descriptionInput = h('textarea', { class: 'c-input', rows: 3, placeholder: ct('Optional description') });
     const fieldsWrap = h('div', { style: { display: 'grid', gap: '8px' } });
