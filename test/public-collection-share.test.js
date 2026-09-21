@@ -72,6 +72,7 @@ describe('public collection JSON publishing', function () {
     const service = { resolve: async () => share };
     const projects = { requireActiveProject: async (id) => assert.strictEqual(id, share.project_id) };
     const database = {
+      getCollection: async () => ({ name: 'products' }),
       listDocuments: async () => ({
         data: [{
           id: 'rec_1',
