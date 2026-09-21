@@ -236,8 +236,17 @@ async function requestFingerprint(value) {
   return sha256Base64url(canonicalJson(value));
 }
 
+// Filter index keys embed the base64url of the exact string value. The empty
+// string encodes to '', which cannot be an index key segment (segments must be
+// non-empty), so it gets a fixed sentinel. The sentinel cannot collide with a
+// real encoding: base64url output lengths are 0 or >= 2 (lengths mod 4 are
+// only 0, 2, 3), and every non-empty UTF-8 string starts with a byte whose
+// leading sextet is alphanumeric in base64url.
+const EMPTY_FILTER_VALUE_SEGMENT = '0';
+
 function encodeFilterValue(value) {
-  return bytesToBase64url(encoder.encode(value));
+  const encoded = bytesToBase64url(encoder.encode(value));
+  return encoded === '' ? EMPTY_FILTER_VALUE_SEGMENT : encoded;
 }
 
 function normalizeUserDocument(value, limits) {
