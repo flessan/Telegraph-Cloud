@@ -109,6 +109,18 @@ GET|HEAD /p/:projectId/:bucket/*key
 Labeled **Telegraph Database** everywhere; it is a versioned document
 database, never PostgreSQL:
 
+- Collections are first-class resources. The section's "+" action always
+  means **New collection**: an explicit builder for name, description, and
+  typed fields (`text`, `number`, `boolean`, `datetime`, `json`, `file`,
+  `select`) with per-field required flags, default values, and select
+  options. The metadata is stored server-side
+  (`telegraph-cloud.collection.v1`) and drives validation of future writes.
+- Records are created only inside a collection that already exists; the
+  record dialog shows the open collection as read-only context, and a record
+  write never creates a collection as a side effect.
+- Collections created before schemas existed (schema-less) remain fully
+  readable and writable; a schema can be defined on them later and then
+  constrains only future writes.
 - Browse collections and records with bounded lists and cursors, exact-match
   filters on indexed top-level string fields, record history (immutable
   revisions), and a JSON editor for create/PATCH/delete.

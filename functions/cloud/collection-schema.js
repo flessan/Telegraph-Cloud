@@ -41,7 +41,12 @@ function fieldTypeProblem(field, value) {
       return typeof value === 'string' ? null : 'must be a string object key reference';
     case 'select':
       if (typeof value !== 'string') return 'must be a string';
-      return Array.isArray(field.options) && field.options.includes(value)
+      // A select field declared without options can never match; report the
+      // controlled problem instead of dereferencing the missing options list.
+      if (!Array.isArray(field.options) || field.options.length === 0) {
+        return 'must be one of the declared options (none are declared)';
+      }
+      return field.options.includes(value)
         ? null
         : `must be one of: ${field.options.join(', ')}`;
     default:

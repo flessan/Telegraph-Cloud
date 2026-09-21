@@ -15,13 +15,31 @@ function dbBase(projectId) {
   return `/api/projects/${encodeURIComponent(projectId)}/db`;
 }
 
+// "+" always means "New collection" in the Data section.
+function plusIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+}
+
+function newCollectionButton(onOpen) {
+  return h('button', { class: 'c-btn primary', onClick: onOpen }, [
+    h('span', { 'aria-hidden': 'true', html: plusIcon() }),
+    ct('New collection'),
+  ]);
+}
+
 export async function renderData(container, projectId, query) {
   const tab = ['collections', 'records', 'schema'].includes(query.get('tab')) ? query.get('tab') : 'collections';
 
   let collections = [];
   let selected = query.get('collection') || null;
 
-  container.append(pageHead(ct('Data'), ct('Collections, versioned JSON records, and schemas. Backed by the Telegram/KV journal — a document API, not PostgreSQL.')));
+  // "+" is the single creation affordance of the Data section and always
+  // means "New collection". Collections are first-class resources: they are
+  // created explicitly with name, description, and typed fields — never as a
+  // side effect of writing a record.
+  container.append(pageHead(ct('Data'), ct('Collections, versioned JSON records, and schemas. Backed by the Telegram/KV journal — a document API, not PostgreSQL.'), [
+    newCollectionButton(() => collectionDialog()),
+  ]));
   container.append(subTabs(projectId, 'data', tab, [
     { tab: 'collections', label: () => ct('Collections') },
     { tab: 'records', label: () => ct('Records') },
@@ -54,18 +72,14 @@ export async function renderData(container, projectId, query) {
 
   // ------------------------------------------------------------ collections
   function renderCollectionsTab(wrap) {
-    const header = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', gap: '12px', flexWrap: 'wrap' } }, [
-      h('p', { style: { margin: 0, color: 'var(--c-text-2)', fontSize: '13px' } }, ct('Collections hold versioned JSON documents. Create a collection first, then add records.')),
-      h('button', { class: 'c-btn primary', onClick: () => collectionDialog() }, ct('New collection')),
-    ]);
-    wrap.append(header);
+    wrap.append(h('p', { style: { margin: '0 0 12px', color: 'var(--c-text-2)', fontSize: '13px' } }, ct('Collections hold versioned JSON documents. Create a collection first, then add records.')));
 
     if (!collections.length) {
       wrap.append(h('div', { class: 'c-card' }, [emptyState({
         icon: 'db',
         title: ct('No collections yet'),
         body: ct('Create a collection to start adding records. A collection defines its schema and gets its own REST endpoints.'),
-        actions: [h('button', { class: 'c-btn primary', onClick: () => collectionDialog() }, ct('New collection'))],
+        actions: [newCollectionButton(() => collectionDialog())]
       })]));
       return;
     }
@@ -149,7 +163,7 @@ export async function renderData(container, projectId, query) {
         icon: 'db',
         title: ct('Select a collection'),
         body: ct('Create a collection first, then add records and expose it through the document API.'),
-        actions: [h('button', { class: 'c-btn primary', onClick: () => collectionDialog() }, ct('New collection'))],
+        actions: [newCollectionButton(() => collectionDialog())]
       })]));
       return;
     }
@@ -277,7 +291,7 @@ export async function renderData(container, projectId, query) {
         icon: 'db',
         title: ct('Select a collection'),
         body: ct('Create a collection first, then define its schema.'),
-        actions: [h('button', { class: 'c-btn primary', onClick: () => collectionDialog() }, ct('New collection'))],
+        actions: [newCollectionButton(() => collectionDialog())]
       })]));
       return;
     }
@@ -345,7 +359,6 @@ export async function renderData(container, projectId, query) {
       type: f.type,
       required: !!f.required,
       default: f.default !== undefined ? String(f.default) : '',
-      hasDefault: f.default !== undefined,
       options: Array.isArray(f.options) ? f.options.join(', ') : '',
     }));
     const fieldsWrap = h('div', { style: { display: 'grid', gap: '8px' } });
@@ -359,8 +372,7 @@ export async function renderData(container, projectId, query) {
         const required = h('input', { type: 'checkbox', checked: field.required, onchange: (e) => { field.required = e.target.checked; } });
         const defaultInput = h('input', {
           class: 'c-input', type: 'text', placeholder: ct('default'), value: field.default,
-          ...(field.type === 'select' ? { hidden: '' } : {}),
-          oninput: (e) => { field.default = e.target.value; field.hasDefault = e.target.value !== ''; },
+          oninput: (e) => { field.default = e.target.value; },
         });
         const optionsInput = h('input', {
           class: 'c-input', type: 'text', placeholder: 'a, b, c', value: field.options,
@@ -385,25 +397,12 @@ export async function renderData(container, projectId, query) {
 
     const save = async (close) => {
       errorEl.textContent = '';
-      const cleanFields = [];
-      for (const field of fields.filter((f) => f.name)) {
-        const entry = {
-          name: field.name,
-          type: field.type,
-          required: !!field.required,
-        };
-        if (field.hasDefault && field.default !== '' && field.type !== 'select') {
-          const result = validateDefault(field);
-          if (result.error) { errorEl.textContent = result.error; return false; }
-          entry.default = result.value;
-        }
-        if (field.type === 'select' && field.options.trim()) entry.options = field.options.split(',').map((o) => o.trim()).filter(Boolean);
-        cleanFields.push(entry);
-      }
+      const cleaned = cleanSchemaFields(fields);
+      if (cleaned.error) { errorEl.textContent = cleaned.error; return false; }
       try {
         await api.patch(`${dbBase(projectId)}/collections/${encodeURIComponent(collection.name)}`, {
           description: descriptionInput.value.trim(),
-          fields: cleanFields,
+          fields: cleaned.fields,
         });
         toast(ct('Schema saved'), { kind: 'success' });
         close();
@@ -423,7 +422,7 @@ export async function renderData(container, projectId, query) {
         h('div', {}, [
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } }, [
             h('strong', {}, ct('Fields')),
-            h('button', { class: 'c-btn outlined sm', onClick: () => { fields.push({ name: 'field_' + (fields.length + 1), type: 'text', required: false, default: '', hasDefault: false, options: '' }); renderFields(); } }, ct('+ Add field')),
+            h('button', { class: 'c-btn outlined sm', onClick: () => { fields.push({ name: 'field_' + (fields.length + 1), type: 'text', required: false, default: '', options: '' }); renderFields(); } }, ct('+ Add field')),
           ]),
           fieldsWrap,
           h('span', { class: 'c-field-hint' }, ct('select options are comma-separated. Reserved keys (id, version, created_at, …) cannot be field names.')),
@@ -438,8 +437,8 @@ export async function renderData(container, projectId, query) {
   }
 
   // Returns { value } or { error } when the typed default does not match
-  // the field type.
-  function validateDefault(field) {
+  // the field type. `options` is the parsed option list of a select field.
+  function validateDefault(field, options = []) {
     if (field.type === 'number') {
       const n = Number(field.default);
       return Number.isFinite(n) ? { value: n } : { error: ct('Default for a number field must be a number.') };
@@ -453,7 +452,43 @@ export async function renderData(container, projectId, query) {
       try { return { value: JSON.parse(field.default) }; }
       catch (_) { return { error: ct('Default for a json field must be valid JSON.') }; }
     }
+    if (field.type === 'select') {
+      return options.includes(field.default.trim())
+        ? { value: field.default.trim() }
+        : { error: ct('Default for a select field must be one of the listed options.') };
+    }
     return { value: field.default };
+  }
+
+  // Shared by the create-collection and edit-schema dialogs: normalize the
+  // field-builder rows into schema entries. Client-side checks mirror
+  // normalizeSchemaFields on the server so mistakes surface next to the
+  // control that caused them instead of as a raw API error.
+  function cleanSchemaFields(rows) {
+    const clean = [];
+    const seen = new Set();
+    for (const field of rows) {
+      const name = (field.name || '').trim();
+      if (!name) continue;
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+        return { error: ct('Field names start with a lowercase letter and contain only letters, numbers, or underscore.') };
+      }
+      if (seen.has(name)) return { error: ct('Field names must be unique.') };
+      seen.add(name);
+      const entry = { name, type: field.type, required: !!field.required };
+      const options = (field.options || '').split(',').map((option) => option.trim()).filter(Boolean);
+      if (field.type === 'select') {
+        if (!options.length) return { error: ct('Select fields need at least one option.') };
+        entry.options = options;
+      }
+      if ((field.default || '') !== '') {
+        const result = validateDefault(field, options);
+        if (result.error) return { error: result.error };
+        entry.default = result.value;
+      }
+      clean.push(entry);
+    }
+    return { fields: clean };
   }
 
   // ------------------------------------------------- create collection
@@ -489,8 +524,7 @@ export async function renderData(container, projectId, query) {
           FIELD_TYPES.map((value) => h('option', { value, ...(value === field.type ? { selected: true } : {}) }, value)));
         const required = h('input', { type: 'checkbox', checked: field.required, onchange: (e) => { field.required = e.target.checked; } });
         const defaultInput = h('input', {
-          class: 'c-input', type: 'text', placeholder: ct('default'),
-          ...(field.type === 'select' ? { hidden: '' } : {}),
+          class: 'c-input', type: 'text', placeholder: ct('default'), value: field.default || '',
           oninput: (e) => { field.default = e.target.value; },
         });
         const optionsInput = h('input', {
@@ -524,26 +558,13 @@ export async function renderData(container, projectId, query) {
         errorEl.textContent = ct('Collection names start with a lowercase letter and contain only letters, numbers, underscore, or hyphen.');
         return false;
       }
-      const cleanFields = [];
-      for (const field of fields.filter((f) => f.name)) {
-        const entry = {
-          name: field.name,
-          type: field.type,
-          required: !!field.required,
-        };
-        if (field.default && field.type !== 'select') {
-          const result = validateDefault(field);
-          if (result.error) { errorEl.textContent = result.error; return false; }
-          entry.default = result.value;
-        }
-        if (field.type === 'select' && (field.options || '').trim()) entry.options = field.options.split(',').map((o) => o.trim()).filter(Boolean);
-        cleanFields.push(entry);
-      }
+      const cleaned = cleanSchemaFields(fields);
+      if (cleaned.error) { errorEl.textContent = cleaned.error; return false; }
       try {
         await api.post(dbBase(projectId) + '/collections', {
           name,
           description: descriptionInput.value.trim(),
-          fields: cleanFields,
+          fields: cleaned.fields,
         });
         toast(ct('Collection created'), { kind: 'success' });
         close();
@@ -583,15 +604,16 @@ export async function renderData(container, projectId, query) {
 
   // -------------------------------------------------------- records CRUD
   function recordDialog(existing) {
-    const collectionName = existing ? selected : null;
-    let workingCollection = collectionName;
+    // Records live inside a collection that already exists. The collection is
+    // chosen by opening it (Collections tab or the picker above the records
+    // table) — it is never typed into the record form, and a record write
+    // never creates a collection as a side effect. "+" in the Data section
+    // creates collections explicitly.
     const dataDoc = existing ? existing.data : { name: 'example' };
     const collectionInput = h('input', {
-      class: 'c-input', type: 'text', value: workingCollection || '',
-      ...(existing ? { disabled: true } : {}),
-      placeholder: 'users',
-      pattern: '[a-z][a-z0-9_-]*',
-      oninput: (e) => { workingCollection = e.target.value.trim(); },
+      class: 'c-input', type: 'text', value: selected || '',
+      disabled: true,
+      'aria-label': ct('Collection'),
     });
     const editor = h('textarea', { class: 'c-json-editor', spellcheck: 'false', id: 'c-json-editor' }, JSON.stringify(dataDoc, null, 2));
     const errorEl = h('span', { class: 'c-field-error', role: 'alert' });
@@ -633,9 +655,9 @@ export async function renderData(container, projectId, query) {
         errorEl.textContent = ct('Documents must be JSON objects.');
         return false;
       }
-      const coll = workingCollection;
+      const coll = selected;
       if (!coll || !/^[a-z][a-z0-9_-]*$/.test(coll)) {
-        errorEl.textContent = ct('Collection names start with a lowercase letter and contain only letters, numbers, underscore, or hyphen.');
+        errorEl.textContent = ct('Open a collection first — records are created inside an existing collection.');
         return false;
       }
       try {
@@ -680,7 +702,7 @@ export async function renderData(container, projectId, query) {
     };
 
     openDialog({
-      title: existing ? ct('Record · {collection}', { collection: selected }) : ct('New record'),
+      title: existing ? ct('Record · {collection}', { collection: selected }) : ct('New record · {collection}', { collection: selected }),
       size: 'lg',
       body: [
         h('label', { class: 'c-field' }, [h('span', { class: 'c-field-label' }, ct('Collection')), collectionInput]),

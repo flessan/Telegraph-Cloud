@@ -38,6 +38,7 @@ export function renderDocs(container) {
 
   section(ct('Document database'), [
     p(ct('Telegraph Database stores JSON documents in collections. Every write creates an immutable revision with an incrementing version; PATCH and DELETE require the expected version (If-Match header or _expected_version field).')),
+    p(ct('Collections are first-class resources: create one explicitly with a name, a description, and typed fields (text, number, boolean, datetime, json, file, select) including required flags, defaults, and select options. Records are added only to collections that already exist; schema-less collections created before schemas existed remain fully readable and writable.')),
     codeBlock(`# Create
 POST /api/db/users       Authorization: Bearer tg_live_…
 {"name":"Thio"}

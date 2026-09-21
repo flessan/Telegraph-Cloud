@@ -194,6 +194,32 @@ describe('Telegraph Cloud collection schemas and lifecycle', function () {
       assert.strictEqual(result.body.data.published, false);
     });
 
+    it('reports a controlled error for select fields declared without options', async function () {
+      const { database } = createDatabase();
+
+      // A select default without options is refused at definition time
+      // (the default could never match) instead of crashing later writes.
+      await assert.rejects(
+        database.createCollection({
+          name: 'broken',
+          fields: [{ name: 'state', type: 'select', required: false, default: 'on' }],
+        }),
+        (error) => error.code === 'invalid_collection_field_default',
+      );
+
+      // A select field without options or default is accepted, but writes
+      // fail with the controlled schema error — never an internal crash.
+      await database.createCollection({
+        name: 'opaque',
+        fields: [{ name: 'state', type: 'select', required: false }],
+      });
+      await assert.rejects(
+        database.createDocument('opaque', { state: 'on' }),
+        (error) => error.code === 'schema_validation_failed'
+          && /must be one of the declared options/.test(error.message),
+      );
+    });
+
     it('enforces datetime, file, and json field types', async function () {
       const { database } = createDatabase();
       await database.createCollection({

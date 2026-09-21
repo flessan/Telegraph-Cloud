@@ -60,7 +60,21 @@ function routes() {
     '/drive/folders': () => ({ status: 201, body: { created: true } }),
     '/drive/copy': () => ({ status: 200, body: { copied: 1 } }),
     '/drive/flags': () => ({ status: 200, body: { ok: true } }),
-    '/db/collections': () => ({ body: { data: [{ name: 'users', record_count: 1 }], truncated: false } }),
+    '/db/collections': ({ init }) => {
+      if (init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        return {
+          status: 201,
+          body: {
+            schema: 'telegraph-cloud.collection.v1',
+            name: body.name,
+            description: body.description || '',
+            fields: body.fields || [],
+          },
+        };
+      }
+      return { body: { data: [{ name: 'users', record_count: 1 }], truncated: false } };
+    },
     '/db/users': () => ({ body: { data: [], has_more: false } }),
     '/keys': ({ init, url }) => {
       if (init.method === 'POST') {
@@ -274,5 +288,108 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.ok(ctx.text().includes('users'));
     // Any usage docs reachable from this view reject SQL/Postgres framing.
     assert.ok(!/PostgreSQL database|Postgres database/i.test(ctx.text()));
+  });
+
+  it('makes "+" open the New Collection builder and stores explicit metadata', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data`);
+    // The Data section's primary action is "+ New collection" — never a
+    // record shortcut.
+    const plusButton = ctx.all('button').find((b) => /New collection/.test(b.textContent));
+    assert.ok(plusButton, '"New collection" primary button exists');
+    click(plusButton);
+    await tick(20);
+
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'New Collection dialog opens');
+    assert.ok(ctx.text().includes('Collection name'), 'name field present');
+    assert.ok(dialog.querySelector('textarea'), 'description field present');
+    const addField = Array.from(dialog.querySelectorAll('button'))
+      .find((b) => /Add field/.test(b.textContent));
+    assert.ok(addField, 'field builder present');
+
+    // Build one select field with options and a default.
+    click(addField);
+    await tick(10);
+    const fieldName = dialog.querySelector('input[placeholder="field_name"]');
+    fieldName.value = 'status';
+    fieldName.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    const typeSelect = dialog.querySelector('select.c-input');
+    typeSelect.value = 'select';
+    typeSelect.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+    await tick(10);
+    // Re-rendered row: the options input is now visible and keeps its value.
+    const optionsInput = dialog.querySelector('input[placeholder="a, b, c"]');
+    assert.ok(optionsInput && !optionsInput.hidden, 'select options input visible');
+    optionsInput.value = 'draft, live, archived';
+    optionsInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    const defaultInput = dialog.querySelector('input[placeholder="default"]');
+    assert.ok(defaultInput && !defaultInput.hidden, 'select default input visible');
+    defaultInput.value = 'draft';
+    defaultInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+
+    const nameInput = dialog.querySelector('input[placeholder="products"]');
+    nameInput.value = 'products';
+    nameInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    dialog.querySelector('textarea').value = 'Product catalog';
+
+    const createBtn = Array.from(dialog.querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create collection');
+    click(createBtn);
+    await tick(40);
+
+    const post = ctx.calls.find((c) => c.method === 'POST' && c.url.endsWith('/db/collections'));
+    assert.ok(post, 'POST /db/collections fired');
+    assert.deepStrictEqual(post.body, {
+      name: 'products',
+      description: 'Product catalog',
+      fields: [{
+        name: 'status',
+        type: 'select',
+        required: false,
+        options: ['draft', 'live', 'archived'],
+        default: 'draft',
+      }],
+    });
+  });
+
+  it('rejects builder mistakes next to the control: select without options', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data`);
+    click(ctx.all('button').find((b) => /New collection/.test(b.textContent)));
+    await tick(20);
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => /Add field/.test(b.textContent)));
+    await tick(10);
+    const typeSelect = dialog.querySelector('select.c-input');
+    typeSelect.value = 'select';
+    typeSelect.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+    await tick(10);
+    const nameInput = dialog.querySelector('input[placeholder="products"]');
+    nameInput.value = 'products';
+    nameInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    click(Array.from(dialog.querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create collection'));
+    await tick(40);
+    // The controlled hint appears; nothing was sent.
+    assert.ok(/Select fields need at least one option/.test(ctx.text()));
+    assert.ok(!ctx.calls.some((c) => c.method === 'POST' && c.url.endsWith('/db/collections')));
+  });
+
+  it('creates records only inside the open collection (no implicit collections)', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data?tab=records&collection=users`);
+    const newRecord = ctx.all('button').find((b) => /New record/.test(b.textContent));
+    assert.ok(newRecord, 'New record button exists');
+    click(newRecord);
+    await tick(20);
+
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'record dialog opens');
+    assert.ok(ctx.text().includes('New record · users'), 'dialog is scoped to the open collection');
+    const collectionInput = dialog.querySelector('input[aria-label="Collection"]');
+    assert.ok(collectionInput, 'collection field rendered');
+    assert.strictEqual(collectionInput.disabled, true, 'collection is fixed, not typeable');
+    assert.strictEqual(collectionInput.value, 'users');
   });
 });
