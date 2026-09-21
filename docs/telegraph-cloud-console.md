@@ -41,6 +41,27 @@ Per-project sections (project id comes from the verified session/URL scope):
 | Files | Drive (folders, uploads, trash/star), flat objects list, and the S3 endpoint + SigV4 credentials — one object engine, three surfaces |
 | API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, request explorer, generated documentation links |
 
+### Connect — developer onboarding center
+
+The Connect section is a single onboarding page with four sections:
+
+- **Quick Start** — three steps (issue credentials → copy `.env` → first
+  request) with live status pills for credentials held in this page's memory
+  and a jump nav.
+- **Environment** — a reference table for `TELEGRAPH_URL`, `TELEGRAPH_PROJECT`,
+  `TELEGRAPH_API_KEY`, and the `S3_*` variables with this deployment's concrete
+  values, plus the generated `.env` file.
+- **API** — the endpoint summary table (Document API, Object API, S3) with
+  scopes, links to `/openapi.json`, the API Explorer, and API Keys, the
+  generated JSON config, and the honest capability notes.
+- **SDK / cURL** — copy-ready cURL and JavaScript examples. Snippets read the
+  key from the environment (`$TELEGRAPH_API_KEY` / `process.env.TELEGRAPH_API_KEY`);
+  the secret is never embedded in a copied command or a URL.
+
+Issued secrets are kept in page memory only — never in localStorage,
+sessionStorage, or any URL — and the credential creation flow (issue dialog →
+exactly-once secret reveal → `.env` update) is unchanged.
+
 ### API Explorer
 
 The API tab's Explorer renders the five generic CRUD operations for any
@@ -52,7 +73,7 @@ cards carry a record-ID field that feeds both "Try it" (which runs against
 the dashboard-session project route, never with a developer key from the
 browser) and the snippets. The Explorer links `/openapi.json` and the
 project-aware OpenAPI document.
-| Connect | Per-project `.env`, cURL, and client examples generator |
+| Connect | Developer onboarding center: Quick Start, Environment, API, SDK / cURL with project-specific examples |
 | Settings | Project name/slug/status and legacy workspace link |
 
 Pre-rework deep links keep working: `drive` → `files?tab=drive`,

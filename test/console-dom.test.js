@@ -431,6 +431,57 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.ok(ctx.all('a').some((a) => (a.getAttribute('href') || '').endsWith('/openapi.json')));
   });
 
+  it('Connect center: sections, project-specific examples, secrets never persisted', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/connect`);
+    assert.deepStrictEqual(ctx.errors, []);
+
+    // The four onboarding sections exist.
+    for (const id of ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk']) {
+      assert.ok(ctx.doc.getElementById(id), `section ${id} present`);
+    }
+
+    // Project-specific examples: all three variables with real values.
+    const text = ctx.text();
+    const origin = ctx.win.location.origin;
+    assert.ok(text.includes('TELEGRAPH_URL'), 'TELEGRAPH_URL documented');
+    assert.ok(text.includes(`TELEGRAPH_PROJECT=${PROJECT.project_id}`), 'env embeds the project id');
+    assert.ok(text.includes(`TELEGRAPH_URL=${origin}`), 'env embeds the origin');
+    const pres = Array.from(ctx.doc.querySelectorAll('pre')).map((pre) => pre.textContent);
+    assert.ok(pres.some((code) => code.includes('$TELEGRAPH_API_KEY')), 'cURL reads the key from the environment');
+    assert.ok(pres.some((code) => code.includes('process.env.TELEGRAPH_API_KEY')), 'JavaScript example reads the key from the environment');
+    assert.ok(pres.some((code) => code.includes('telegraph_project')), 'JSON config present');
+
+    // Before issuing: no secret material anywhere.
+    const SECRET = 'tg_live_key_secret_once_only_value_0123456789';
+    assert.ok(!text.includes(SECRET), 'no secret before issuing');
+    assert.ok(!ctx.win.location.hash.includes('tg_live'), 'no secret in the URL');
+
+    // Existing credential creation flow intact: issue → one-time reveal → .env.
+    click(ctx.all('button').find((b) => b.textContent.trim() === 'Issue API key'));
+    await tick(20);
+    let dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'issue dialog opens');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Create & reveal'));
+    await tick(40);
+    dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog && dialog.textContent.includes(SECRET), 'one-time secret dialog shows the key');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => /I saved the secret/.test(b.textContent)));
+    await tick(40);
+    // The .env block now carries the key — in memory only.
+    const envPre = Array.from(ctx.doc.querySelectorAll('pre')).map((pre) => pre.textContent)
+      .find((code) => code.includes(`TELEGRAPH_PROJECT=${PROJECT.project_id}`));
+    assert.ok(envPre && envPre.includes(SECRET), '.env updated with the issued key');
+
+    // After issuing: the secret is in the DOM (in-memory page state) but
+    // never in localStorage/sessionStorage or any URL.
+    for (const storage of [ctx.win.localStorage, ctx.win.sessionStorage]) {
+      const values = Array.from({ length: storage.length }, (_, i) => storage.getItem(storage.key(i))).join('\n');
+      assert.ok(!values.includes('tg_live'), 'no secret in web storage');
+    }
+    assert.ok(!ctx.win.location.href.includes('tg_live'), 'no secret in the URL');
+  });
+
   it('creates records only inside the open collection (no implicit collections)', async function () {
     ctx = await bootConsole();
     await goto(ctx.win, `#/project/${PROJECT.project_id}/data?tab=records&collection=users`);
