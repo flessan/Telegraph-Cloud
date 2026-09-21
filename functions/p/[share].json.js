@@ -65,6 +65,7 @@ export async function onRequest(context) {
     await projects.requireActiveProject(share.project_id);
 
     const database = data.projectDatabase || createTelegramDocumentDatabase(env, { projectId: share.project_id });
+    await database.getCollection(share.collection);
     const parsedQuery = queryFor(request);
     if (parsedQuery.error) {
       return jsonResponse({ error: parsedQuery.error }, {
@@ -97,7 +98,7 @@ export async function onRequest(context) {
         },
       });
     }
-    return jsonResponse(body, { status: 200, headers: PUBLIC_HEADERS });
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff', ...PUBLIC_HEADERS } });
   } catch (error) {
     if (error?.code === 'public_share_not_found' || error?.code === 'project_not_found' || error?.code === 'project_inactive') {
       return jsonResponse({ error: 'public_share_not_found' }, {
