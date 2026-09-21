@@ -72,20 +72,40 @@ function retryableNetworkDelay(retryCount, randomImpl = Math.random) {
   ));
 }
 
-function telegramFailureKind(status) {
+function telegramFailureKind(status, responseData = null) {
   if (status === 401) return 'auth_failed';
   if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
   if (status === 413) return 'payload_too_large';
   if (status === 429) return 'rate_limited';
+
+  const description = typeof responseData?.description === 'string'
+    ? responseData.description.toLowerCase()
+    : '';
+
+  if (status === 400) {
+    if (/chat not found|chat_id.*not found|peer.*not found/.test(description)) {
+      return 'chat_not_found';
+    }
+    if (/bot .*not (?:a )?member|bot was kicked|not enough rights|have no rights to send|administrator rights/.test(description)) {
+      return 'forbidden';
+    }
+    if (/file is too big|request entity too large/.test(description)) {
+      return 'payload_too_large';
+    }
+    if (/wrong file identifier|invalid file/.test(description)) {
+      return 'invalid_file';
+    }
+  }
+
   if (Number.isInteger(status) && status >= 500 && status <= 599) return 'upstream_unavailable';
   if (Number.isInteger(status) && status >= 400 && status <= 499) return 'api_rejected';
   return 'network_error';
 }
 
-export async function classifyTelegramApiFailure(response) {
+export async function classifyTelegramApiFailure(response, responseData = null) {
   const status = Number(response?.status);
-  return telegramFailureKind(Number.isFinite(status) ? status : null);
+  return telegramFailureKind(Number.isFinite(status) ? status : null, responseData);
 }
 
 export function validateTelegramConfig(env) {
@@ -111,7 +131,11 @@ export async function probeTelegramApiDetailed(env, { fetchImpl = globalThis.fet
     if (typeof fetchImpl !== 'function') return { status: 'unreachable', reason: 'network_error' };
     const response = await fetchImpl(botApiUrl(env, 'getMe'), { method: 'GET' });
     if (response.ok) return { status: 'reachable', reason: 'ok' };
-    return { status: 'unreachable', reason: telegramFailureKind(response.status) };
+    const payload = await parseTelegramResponse(response);
+    return {
+      status: 'unreachable',
+      reason: telegramFailureKind(response.status, payload),
+    };
   } catch (_) {
     return { status: 'unreachable', reason: 'network_error' };
   }
@@ -347,6 +371,10 @@ async function parseTelegramResponse(response) {
 
 function formatTelegramError(apiEndpoint, response, responseData) {
   const status = Number(response?.status);
+  const kind = telegramFailureKind(
+    Number.isFinite(status) ? status : null,
+    responseData,
+  );
   const details = responseData?.description || responseData?.error_code || 'Upload to Telegram failed';
-  return `Telegram ${apiEndpoint} failed: ${Number.isFinite(status) ? status : 'network'} ${details}`;
+  return `Telegram ${apiEndpoint} failed: ${Number.isFinite(status) ? status : 'network'} [${kind}] ${details}`;
 }

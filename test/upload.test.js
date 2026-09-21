@@ -370,3 +370,29 @@ describe('upload function', function () {
     });
   });
 });
+
+
+describe('Telegram upload diagnostic categories', function () {
+  it('returns a safe chat-not-found error for a Telegram 400', async function () {
+    const { onRequestPost } = await import('../functions/upload.js');
+    const restoreConsole = muteConsole();
+    try {
+      fetchMock = installFetchMock(async () => Response.json({
+        ok: false,
+        error_code: 400,
+        description: 'Bad Request: chat not found',
+      }, { status: 400 }));
+
+      const request = await createUploadRequest(new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+      const res = await onRequestPost(makeContext({
+        request,
+        env: { disable_telemetry: 'true', TG_Bot_Token: 'bot-token', TG_Chat_ID: '-100123' },
+      }));
+
+      assert.strictEqual(res.status, 502);
+      assert.deepStrictEqual(await res.json(), { error: 'telegram_chat_not_found' });
+    } finally {
+      restoreConsole();
+    }
+  });
+});

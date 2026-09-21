@@ -138,3 +138,24 @@ describe('Telegram upload resilience', function () {
     assert.deepStrictEqual(endpoints, ['sendPhoto', 'sendDocument']);
   });
 });
+
+
+describe('Telegram failure classification', function () {
+  it('classifies a 400 chat-not-found response safely', async function () {
+    const { classifyTelegramApiFailure } = await import('../functions/cloud/telegram-client.js');
+    const reason = await classifyTelegramApiFailure(
+      new Response(null, { status: 400 }),
+      { ok: false, error_code: 400, description: 'Bad Request: chat not found' },
+    );
+    assert.strictEqual(reason, 'chat_not_found');
+  });
+
+  it('classifies a 400 permission response as forbidden', async function () {
+    const { classifyTelegramApiFailure } = await import('../functions/cloud/telegram-client.js');
+    const reason = await classifyTelegramApiFailure(
+      new Response(null, { status: 400 }),
+      { ok: false, error_code: 400, description: 'Bad Request: not enough rights to send messages' },
+    );
+    assert.strictEqual(reason, 'forbidden');
+  });
+});
