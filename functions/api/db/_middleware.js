@@ -13,7 +13,9 @@ const mutationBuckets = new Map();
 
 function mutationBucketKey(context) {
   const authentication = context.data?.databaseAuthentication;
-  if (authentication?.authentication === 'developer_api_key' && typeof authentication.project_id === 'string') {
+  const mode = authentication?.authentication;
+  // Developer API keys and JWTs both carry the verified project scope.
+  if ((mode === 'developer_api_key' || mode === 'jwt') && typeof authentication.project_id === 'string') {
     return `project:${authentication.project_id}`;
   }
   const identity = context.data?.databaseSession;

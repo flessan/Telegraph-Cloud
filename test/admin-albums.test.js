@@ -58,7 +58,7 @@ describe('unified remote workspace (DOM)', function () {
 
   async function start(options = {}) {
     ctx = await boot({
-      page: 'admin.html',
+      page: 'admin-legacy.html',
       module: 'js/workspace.js',
       routes: routes(options.routes),
       language: options.language || 'en',
@@ -203,7 +203,7 @@ describe('unified remote MIME output and previews (DOM)', function () {
 
   async function start(language = 'en') {
     ctx = await boot({
-      page: 'admin.html',
+      page: 'admin-legacy.html',
       module: 'js/workspace.js',
       language,
       routes: {

@@ -93,7 +93,7 @@ async function finishDashboardLogin(page) {
     await page.fill('#password', PASS);
     await page.click('#submit-btn');
   }
-  await page.waitForURL(/\/admin(?:[?#]|$)/, { timeout: 10000 });
+  await page.waitForURL(/\/admin-legacy(?:[?#]|$)/, { timeout: 10000 });
   await page.locator('#file-stage').waitFor({ state: 'attached', timeout: 10000 });
   await page.waitForTimeout(700);
 }
@@ -138,7 +138,10 @@ async function clickPush(page) {
   check('落地页说明本地审阅和顺序推送', /review|审阅|tinjau/i.test(bodyText) && /sequential|顺序|berurutan/i.test(bodyText));
 
   await page.screenshot({ path: path.join(OUT, 'shot-1-home.png'), fullPage: true });
-  await page.click('a[href="/admin"]');
+  // The landing's dashboard CTA targets the canonical console; the staging and
+  // push flows under test live in the legacy workspace (/admin-legacy).
+  check('落地页指向 /console', await page.locator('a[href="/console"]').count() > 0);
+  await page.goto(BASE + '/admin-legacy', { waitUntil: 'networkidle' });
   await finishDashboardLogin(page);
 
   // --- 2. dashboard file input exists and accepts multiple files

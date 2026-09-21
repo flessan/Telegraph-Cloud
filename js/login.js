@@ -77,7 +77,7 @@ async function handleSubmit(event) {
       const data = await res.json().catch(() => ({}));
       if (data.authEnabled === false) {
         // Auth disabled — go straight to the canonical dashboard route.
-        window.location.href = '/admin';
+        window.location.href = '/console';
         return;
       }
       const params = new URLSearchParams(window.location.search);
@@ -85,8 +85,8 @@ async function handleSubmit(event) {
       const next = requested && requested.startsWith('/') && !requested.startsWith('//')
         && requested.indexOf('\\') === -1 && !requested.startsWith('/login')
         ? requested
-        : '/admin';
-      window.location.href = next === '/admin.html' ? '/admin' : next;
+        : '/console';
+      window.location.href = next === '/admin-legacy.html' ? '/admin-legacy' : next;
       return;
     }
     if (res.status === 401) {

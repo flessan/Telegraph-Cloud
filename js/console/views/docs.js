@@ -38,6 +38,7 @@ export function renderDocs(container) {
 
   section(ct('Document database'), [
     p(ct('Telegraph Database stores JSON documents in collections. Every write creates an immutable revision with an incrementing version; PATCH and DELETE require the expected version (If-Match header or _expected_version field).')),
+    p(ct('Collections are first-class resources: create one explicitly with a name, a description, and typed fields (text, number, boolean, datetime, json, file, select) including required flags, defaults, and select options. Records are added only to collections that already exist; schema-less collections created before schemas existed remain fully readable and writable.')),
     codeBlock(`# Create
 POST /api/db/users       Authorization: Bearer tg_live_…
 {"name":"Thio"}
@@ -65,7 +66,7 @@ GET /api/db/users?role=admin&limit=50`),
   ]);
 
   section(ct('Legacy media'), [
-    p(ct('The original workspace at /admin remains: staged uploads, push queue, albums, whitelist/blacklist, moderation, short URLs, and R2/Telegram legacy serving. It is a compatibility area and keeps all existing workflows and public links.')),
+    p(ct('The original workspace remains at /admin-legacy (/admin redirects into this console): staged uploads, push queue, albums, whitelist/blacklist, moderation, short URLs, and R2/Telegram legacy serving. It is a compatibility area and keeps all existing workflows and public links.')),
   ]);
 
   function section(title, children) {

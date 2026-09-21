@@ -1,4 +1,5 @@
 import { createDocumentDatabaseService } from './contracts.js';
+import { applySchemaDefaults, normalizeSchemaFields, validateDocumentAgainstSchema } from './collection-schema.js';
 import {
   CloudAdapterError,
   CloudConfigurationError,
@@ -235,8 +236,17 @@ async function requestFingerprint(value) {
   return sha256Base64url(canonicalJson(value));
 }
 
+// Filter index keys embed the base64url of the exact string value. The empty
+// string encodes to '', which cannot be an index key segment (segments must be
+// non-empty), so it gets a fixed sentinel. The sentinel cannot collide with a
+// real encoding: base64url output lengths are 0 or >= 2 (lengths mod 4 are
+// only 0, 2, 3), and every non-empty UTF-8 string starts with a byte whose
+// leading sextet is alphanumeric in base64url.
+const EMPTY_FILTER_VALUE_SEGMENT = '0';
+
 function encodeFilterValue(value) {
-  return bytesToBase64url(encoder.encode(value));
+  const encoded = bytesToBase64url(encoder.encode(value));
+  return encoded === '' ? EMPTY_FILTER_VALUE_SEGMENT : encoded;
 }
 
 function normalizeUserDocument(value, limits) {
@@ -553,32 +563,7 @@ function normalizeCollectionDefinition(value, limits) {
   if (utf8ByteLength(description) > 1000) {
     throw new CloudValidationError('invalid_collection_description', 'Collection description is too long.');
   }
-  const rawFields = value.fields === undefined ? [] : value.fields;
-  if (!Array.isArray(rawFields) || rawFields.length > 100) {
-    throw new CloudValidationError('invalid_collection_fields', 'Collection fields are invalid.');
-  }
-  const allowedTypes = new Set(['text', 'number', 'boolean', 'datetime', 'json', 'file', 'select']);
-  const fields = rawFields.map((field) => {
-    if (!plainObject(field)) throw new CloudValidationError('invalid_collection_field', 'Collection field is invalid.');
-    const fieldName = typeof field.name === 'string' ? field.name.trim() : '';
-    if (!/^[a-z][a-z0-9_]*$/.test(fieldName) || RESERVED_DOCUMENT_FIELDS.has(fieldName)) {
-      throw new CloudValidationError('invalid_collection_field', 'Collection field name is invalid.');
-    }
-    const type = String(field.type || 'text');
-    if (!allowedTypes.has(type)) throw new CloudValidationError('invalid_collection_field_type', 'Collection field type is invalid.');
-    return {
-      name: fieldName,
-      type,
-      required: Boolean(field.required),
-      ...(field.default !== undefined ? { default: clone(field.default) } : {}),
-      ...(type === 'select' && Array.isArray(field.options) ? { options: field.options.map(String).slice(0, 100) } : {}),
-    };
-  });
-  const names = new Set();
-  for (const field of fields) {
-    if (names.has(field.name)) throw new CloudValidationError('duplicate_collection_field', 'Collection field names must be unique.');
-    names.add(field.name);
-  }
+  const fields = normalizeSchemaFields(value.fields === undefined ? [] : value.fields, RESERVED_DOCUMENT_FIELDS);
   return { schema: 'telegraph-cloud.collection.v1', name, description, fields };
 }
 
@@ -1265,7 +1250,14 @@ export function createTelegramDocumentDatabase(env, {
   async function getCollection(collectionInput) {
     const collection = assertCollectionName(collectionInput, { maxBytes: limits.maxCollectionNameLength });
     const stored = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, collection);
-    if (!stored) throw new CloudNotFoundError();
+    if (!stored) throw new CloudNotFoundError('collection_not_found', 'The collection does not exist.');
+    return normalizeCollectionDefinition(stored, limits);
+  }
+
+  // Collections without metadata are legacy: null schema, no enforcement.
+  async function readCollectionSchema(collection) {
+    const stored = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, collection);
+    if (!stored) return null;
     return normalizeCollectionDefinition(stored, limits);
   }
 
@@ -1277,9 +1269,58 @@ export function createTelegramDocumentDatabase(env, {
     return { status: 201, body: definition };
   }
 
+  // Update a collection's description and/or schema. Defining a schema on a
+  // legacy collection is the migration path: it constrains future writes but
+  // never touches stored records.
+  async function patchCollection(nameInput, patchInput) {
+    const name = assertCollectionName(nameInput, { maxBytes: limits.maxCollectionNameLength });
+    if (!plainObject(patchInput)) {
+      throw new CloudValidationError('invalid_collection_patch', 'Collection patch must be an object.');
+    }
+    const unsupported = Object.keys(patchInput).filter((field) => field !== 'description' && field !== 'fields');
+    if (unsupported.length > 0) {
+      throw new CloudValidationError('invalid_collection_patch', 'Collection patch contains unsupported fields.');
+    }
+    const stored = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, name);
+    if (!stored) throw new CloudNotFoundError('collection_not_found', 'The collection does not exist.');
+    const current = normalizeCollectionDefinition(stored, limits);
+    const description = patchInput.description === undefined ? current.description : String(patchInput.description);
+    if (utf8ByteLength(description) > 1000) {
+      throw new CloudValidationError('invalid_collection_description', 'Collection description is too long.');
+    }
+    const fields = patchInput.fields === undefined
+      ? current.fields
+      : normalizeSchemaFields(patchInput.fields, RESERVED_DOCUMENT_FIELDS);
+    const definition = { schema: 'telegraph-cloud.collection.v1', name, description, fields };
+    await putIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, [name], definition);
+    return definition;
+  }
+
+  // Delete a collection's metadata only. A collection with records is
+  // refused (409) rather than orphaning data; records are deleted
+  // individually through the versioned document API.
+  async function deleteCollection(nameInput) {
+    const name = assertCollectionName(nameInput, { maxBytes: limits.maxCollectionNameLength });
+    const stored = await getIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, name);
+    if (!stored) throw new CloudNotFoundError('collection_not_found', 'The collection does not exist.');
+    const page = await listIndex(DOCUMENT_INDEX_NAMESPACES.collection, { limit: 1 });
+    if (page && Array.isArray(page.keys) && page.keys.length > 0) {
+      throw new CloudConflictError('collection_not_empty', 'Delete the records before deleting the collection.');
+    }
+    await removeIndex(DOCUMENT_INDEX_NAMESPACES.collectionMeta, name);
+    return { deleted: true, name };
+  }
+
   async function createDocument(collectionInput, documentInput, { idempotencyKey } = {}) {
     const collection = assertCollectionName(collectionInput, { maxBytes: limits.maxCollectionNameLength });
-    const document = normalizeUserDocument(documentInput, limits);
+    let document = normalizeUserDocument(documentInput, limits);
+    const schema = await readCollectionSchema(collection);
+    if (schema) {
+      // Defaults are applied before the idempotency fingerprint so retries
+      // and first writes agree on the canonical document.
+      document = applySchemaDefaults(document, schema);
+      validateDocumentAgainstSchema(document, schema, { operation: 'create' });
+    }
     const fingerprint = await requestFingerprint({ operation: 'create', collection, document });
     const identity = await mutationIdentity(idempotencyKey, fingerprint);
     const existing = await readOutbox(identity.outboxId);
@@ -1345,6 +1386,13 @@ export function createTelegramDocumentDatabase(env, {
       );
     }
 
+    const schema = await readCollectionSchema(collection);
+    if (schema) {
+      // The merged document is what the new revision will store. Legacy
+      // fields predating the schema stay readable; the patch may not add
+      // fields outside the schema or violate required/type/select rules.
+      validateDocumentAgainstSchema({ ...current.document, ...patch }, schema, { operation: 'patch', patch });
+    }
     const updatedAt = toIsoTimestamp(now);
     const nextDocument = validateFullDocument({ ...current.document, ...patch }, limits);
     const eventId = generatedId('evt_');
@@ -1572,6 +1620,8 @@ export function createTelegramDocumentDatabase(env, {
   return createDocumentDatabaseService({
     createCollection,
     getCollection,
+    patchCollection,
+    deleteCollection,
     createDocument,
     getDocument,
     listDocuments,

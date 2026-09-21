@@ -8,40 +8,123 @@ it introduces no SQL database.
 
 - Entry point: `/console` (served from `console.html`; bare `/console.html`
   redirects to the canonical `/console` URL).
-- Legacy workspace: `/admin` keeps every existing workflow and route, linked
-  from the console sidebar as **Legacy Media**. Existing `/file/*` links and
-  the legacy upload pipeline are untouched.
+- Legacy workspace: the legacy media workflows live at `/admin-legacy`
+  (pretty URL for `admin-legacy.html`), linked from the console sidebar as
+  **Legacy Media**. `/admin` is a compatibility entry point that redirects
+  into `/console`. Existing `/file/*` links and the legacy upload pipeline are
+  untouched.
 - No backend architecture was rewritten. The console is a consumer of the
   Phase 1–6C HTTP APIs, plus the small additions listed under "Backend
   additions" below.
 
 ## Information architecture
 
-Global sections (no project selected):
+The console is the single canonical management UI. Global sections (no
+project selected):
 
 | Section | Contents |
 | --- | --- |
 | Overview | Deployment-wide summary drawn from real project/object metrics only |
 | Projects | Create, open, rename, and deactivate projects; slug and status |
 | Documentation | This product's model, endpoints, credentials, and honest limitations |
-| Settings | Console appearance, language, and the link back to Legacy Media |
+
+Console preferences (theme, language, and compatibility links to the legacy
+workspace and landing page) live behind the topbar settings button; the
+`#/settings` deep link keeps working for existing bookmarks.
 
 Per-project sections (project id comes from the verified session/URL scope):
 
 | Section | Contents |
 | --- | --- |
 | Overview | Project scopes, counts from real stats endpoints, quick links |
-| Drive | Buckets, folders (prefixes), uploads, search, trash/star, details drawer |
-| Database | Telegraph Database collections, JSON records, revision metadata |
-| S3 | Real S3 capability matrix and endpoint details (no invented features) |
-| API Keys | `tg_live_…` Bearer developer keys with `db:`/`storage:` scopes |
-| S3 Credentials | `tgsk_live_…` SigV4 credentials with `s3:read`/`s3:write` |
-| Connect | Per-project `.env`, cURL, and client examples generator |
+| Data | Telegraph Database collections, JSON records, revision metadata, schemas |
+| Files | Drive (folders, uploads, trash/star), flat objects list, and the S3 endpoint + SigV4 credentials — one object engine, three surfaces |
+| API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, short-lived JWTs (`POST /api/auth/token`, JWKS verification), request explorer, generated documentation links |
+
+### Connect — developer onboarding center
+
+The **AI Agent** subsection generates one project-specific prompt per
+supported coding agent (Generic AI Agent, Claude Code, Cursor, Codex,
+Gemini CLI) behind a **"Paste this prompt"** button. The prompt carries:
+the deployment URL, the project ID, the OpenAPI URL, the documentation URLs,
+the environment variable *names* (never values), Bearer authentication
+instructions, and the available capabilities (generic document CRUD with
+versions and preconditions, object storage, the S3-compatible endpoint).
+It also mandates agent behavior: read the documentation first, inspect the
+existing repository, reuse the existing integration, do not create another
+database, do not introduce PostgreSQL/Prisma/Drizzle, and never commit
+secrets. Agent flavors add only their durable-notes convention (CLAUDE.md,
+.cursor/rules, AGENTS.md, GEMINI.md). The prompt is generated from the URL
+and project ID alone — it can never contain a secret value.
+
+The Connect section is a single onboarding page with four sections:
+
+- **Quick Start** — three steps (issue credentials → copy `.env` → first
+  request) with live status pills for credentials held in this page's memory
+  and a jump nav.
+- **Environment** — a reference table for `TELEGRAPH_URL`, `TELEGRAPH_PROJECT`,
+  `TELEGRAPH_API_KEY`, and the `S3_*` variables with this deployment's concrete
+  values, plus the generated `.env` file.
+- **API** — the endpoint summary table (Document API, Object API, S3) with
+  scopes, links to `/openapi.json`, the API Explorer, and API Keys, the
+  generated JSON config, and the honest capability notes.
+- **SDK / cURL** — copy-ready cURL and JavaScript examples. Snippets read the
+  key from the environment (`$TELEGRAPH_API_KEY` / `process.env.TELEGRAPH_API_KEY`);
+  the secret is never embedded in a copied command or a URL.
+
+Issued secrets are kept in page memory only — never in localStorage,
+sessionStorage, or any URL — and the credential creation flow (issue dialog →
+exactly-once secret reveal → `.env` update) is unchanged.
+
+### API Explorer
+
+The API tab's Explorer renders the five generic CRUD operations for any
+collection (list, create, read, update, delete) with: method badge, endpoint
+path, parameter table, authentication (`Bearer tg_live_…`), the example
+request body (schema-aware when the collection has fields), the example
+response, and copy-ready cURL / JavaScript / Python snippets. Record-level
+cards carry a record-ID field that feeds both "Try it" (which runs against
+the dashboard-session project route, never with a developer key from the
+browser) and the snippets. The Explorer links `/openapi.json` and the
+project-aware OpenAPI document.
+
+## Developer documentation (generated, real routes)
+
+Every documentation link the console shows is a real endpoint:
+
+- `GET /openapi.json` — OpenAPI 3.1 generated from the actual route catalog
+  (the accuracy test proves every documented path maps to a real file).
+- `GET /llms.txt` — concise machine-readable digest for coding agents:
+  what the service is, authentication, the real endpoint list, hard rules.
+- `GET /llms-full.txt` — the full documentation set (getting started,
+  projects, collections, CRUD, API keys, JWT, JWKS, storage, S3, AI agents,
+  self-hosting) in one plain-text document.
+- `GET /docs` — the same topics as human-readable HTML pages
+  (`/docs/getting-started … /docs/self-hosting`), including
+  `/docs/ai` (AI-agent integration guide) and `/docs/ai-agent`
+  (copy-ready plain-text onboarding brief).
+- `GET /.well-known/telegraph.json` — service metadata: endpoints,
+  authentication summary, capability flags (including honest `false`
+  entries), and limits.
+- `GET /.well-known/jwks.json` — public JWT verification keys.
+
+All of them are generated from the same modules that implement the API
+(shared route catalog, scopes, TTLs, limits), so the documentation cannot
+drift from the real surface. They contain configuration names and
+credential *prefixes* only — never secret values — and are public and
+cacheable.
+
+| Connect | Developer onboarding center: Quick Start, Environment, API, SDK / cURL with project-specific examples |
 | Settings | Project name/slug/status and legacy workspace link |
 
+Pre-rework deep links keep working: `drive` → `files?tab=drive`,
+`database` → `data?tab=collections`, `s3`/`s3-credentials` → `files?tab=s3`,
+and `keys` → `api?tab=keys`.
+
 Legacy Media (old uploads, the push queue, albums, whitelist/blacklist,
-moderation, short URLs, legacy R2/Telegram serving) stays under `/admin`.
-Legacy routes were preserved, not ported or deleted.
+moderation, short URLs, legacy R2/Telegram serving) stays at `/admin-legacy`
+and is reached from the console sidebar footer. `/admin` redirects into
+`/console`. Legacy routes were preserved, not ported or deleted.
 
 ## Drive
 
@@ -100,6 +183,18 @@ GET|HEAD /p/:projectId/:bucket/*key
 Labeled **Telegraph Database** everywhere; it is a versioned document
 database, never PostgreSQL:
 
+- Collections are first-class resources. The section's "+" action always
+  means **New collection**: an explicit builder for name, description, and
+  typed fields (`text`, `number`, `boolean`, `datetime`, `json`, `file`,
+  `select`) with per-field required flags, default values, and select
+  options. The metadata is stored server-side
+  (`telegraph-cloud.collection.v1`) and drives validation of future writes.
+- Records are created only inside a collection that already exists; the
+  record dialog shows the open collection as read-only context, and a record
+  write never creates a collection as a side effect.
+- Collections created before schemas existed (schema-less) remain fully
+  readable and writable; a schema can be defined on them later and then
+  constrains only future writes.
 - Browse collections and records with bounded lists and cursors, exact-match
   filters on indexed top-level string fields, record history (immutable
   revisions), and a JSON editor for create/PATCH/delete.
@@ -120,6 +215,19 @@ Two explicitly separate credential kinds:
   APIs. Scopes are `db:read`, `db:write`, `storage:read`, `storage:write`.
 - **S3 Credentials** (`tgsk_live_…` + `secret_access_key`): SigV4 only, with
   `s3:read`/`s3:write`. They never work as Bearer keys.
+
+- **Short-lived JWTs** (derived, never stored): `POST /api/auth/token`
+  exchanges a `tg_live_…` key (or an unexpired JWT) for an ES256
+  (ECDSA P-256) JWT that inherits the credential's project and scopes.
+  Tokens are compact JWS with `iss`/`aud`/`sub`/project/scopes/`iat`/`exp`/
+  `jti` claims and a `kid` header; default lifetime 900 s, bounded to
+  60–3600 s. Any Bearer-protected developer route accepts them alongside
+  API keys. Verifiers resolve public keys from `/.well-known/jwks.json`
+  (public keys only — the private scalar is never published). Signing keys
+  rotate via `POST /api/auth/keys/rotate` (dashboard-gated): the previous
+  private key is purged from KV immediately, its public key stays published
+  so outstanding tokens keep verifying until expiry. Private keys live only
+  in KV and never appear in any response.
 
 The full secret is shown **exactly once**, in a dialog that requires explicit
 acknowledgement ("I saved the secret"); list endpoints return verifier-only

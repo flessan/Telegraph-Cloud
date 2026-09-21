@@ -52,7 +52,10 @@ export function objectLocationFromContext(context) {
  */
 export function objectStorageForContext(context) {
   const authentication = context?.data?.storageAuthentication;
-  if (authentication?.authentication !== 'developer_api_key' || typeof authentication.project_id !== 'string') {
+  const mode = authentication?.authentication;
+  // API keys and short-lived JWTs both derive the project exclusively from
+  // the verified credential; neither may be supplied by request data.
+  if ((mode !== 'developer_api_key' && mode !== 'jwt') || typeof authentication.project_id !== 'string') {
     throw new CloudUnauthorizedError('invalid_api_key', 'A valid developer API key is required.');
   }
   return createTelegramObjectStorage(context.env, { projectId: authentication.project_id });

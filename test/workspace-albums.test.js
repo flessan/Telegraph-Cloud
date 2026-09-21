@@ -18,7 +18,7 @@ describe('workspace albums (DOM)', function () {
   };
 
   async function start(options = {}) {
-    ctx = await boot({ page: 'admin.html', module: 'js/workspace.js', routes, ...options });
+    ctx = await boot({ page: 'admin-legacy.html', module: 'js/workspace.js', routes, ...options });
     return ctx;
   }
 

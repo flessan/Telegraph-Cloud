@@ -27,7 +27,7 @@ function walkJs(dir) {
 
 function referencedKeys() {
   const files = [
-    'index.html', 'login.html', 'admin.html', 'console.html',
+    'index.html', 'login.html', 'admin-legacy.html', 'console.html',
     'js/landing.js', 'js/login.js', 'js/workspace.js', 'js/admin.js',
     ...walkJs('js/console'),
   ];
@@ -67,7 +67,7 @@ describe('single English/Chinese/Indonesian i18n system', () => {
 
   it('contains no hard-coded Chinese fallback in canonical UI sources', () => {
     const cjk = /[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]/;
-    for (const file of ['index.html', 'login.html', 'admin.html', 'console.html',
+    for (const file of ['index.html', 'login.html', 'admin-legacy.html', 'console.html',
       'js/landing.js', 'js/login.js', 'js/workspace.js', ...walkJs('js/console')]) {
       const text = fs.readFileSync(path.join(root, file), 'utf8');
       assert.ok(!cjk.test(text), `${file} contains Chinese UI text`);

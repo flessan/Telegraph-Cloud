@@ -60,7 +60,21 @@ function routes() {
     '/drive/folders': () => ({ status: 201, body: { created: true } }),
     '/drive/copy': () => ({ status: 200, body: { copied: 1 } }),
     '/drive/flags': () => ({ status: 200, body: { ok: true } }),
-    '/db/collections': () => ({ body: { data: [{ name: 'users', record_count: 1 }], truncated: false } }),
+    '/db/collections': ({ init }) => {
+      if (init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        return {
+          status: 201,
+          body: {
+            schema: 'telegraph-cloud.collection.v1',
+            name: body.name,
+            description: body.description || '',
+            fields: body.fields || [],
+          },
+        };
+      }
+      return { body: { data: [{ name: 'users', record_count: 1 }], truncated: false } };
+    },
     '/db/users': () => ({ body: { data: [], has_more: false } }),
     '/keys': ({ init, url }) => {
       if (init.method === 'POST') {
@@ -123,9 +137,10 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.deepStrictEqual(ctx.errors, []);
     assert.match(ctx.text(), /Telegraph Cloud/);
     assert.match(ctx.text(), /Overview/);
-    // Legacy media compatibility link is preserved.
-    const legacy = ctx.all('a').find((a) => a.getAttribute('href') === '/admin');
-    assert.ok(legacy, 'links to the legacy /admin workspace');
+    // Legacy media compatibility link is preserved; the compatibility
+    // workspace now lives at /admin-legacy while /admin redirects to /console.
+    const legacy = ctx.all('a').find((a) => a.getAttribute('href') === '/admin-legacy.html');
+    assert.ok(legacy, 'links to the legacy /admin-legacy workspace');
   });
 
   it('renders the Drive and opens the inspector with real direct-link snippets', async function () {
@@ -230,13 +245,40 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     ctx = await bootConsole({ language: 'zh' });
     assert.deepStrictEqual(ctx.errors, []);
     const navText = ctx.doc.getElementById('c-global-nav').textContent;
-    for (const zh of ['概览', '项目', '文档', '设置']) {
+    for (const zh of ['概览', '项目', '文档']) {
       assert.ok(navText.includes(zh), `nav translated (${zh}): ${navText}`);
     }
-    // The four English global nav labels must not remain.
+    // The English global nav labels must not remain.
     assert.ok(!/(^|\W)(Overview|Documentation|Settings)(\W|$)/.test(navText), navText);
     // Static chrome retranslates too.
     assert.ok(ctx.doc.getElementById('c-legacy-link').textContent.includes('旧版媒体'));
+    // Console settings stay reachable through the topbar gear.
+    assert.ok(ctx.doc.getElementById('c-console-settings-btn'), 'topbar settings button exists');
+  });
+
+  it('follows the canonical IA: three global sections, six project sections', async function () {
+    ctx = await bootConsole();
+    // Global sidebar is exactly Overview, Projects, Documentation — no
+    // global Settings item (preferences live behind the topbar gear).
+    const globalLabels = Array.from(ctx.doc.querySelectorAll('#c-global-nav .c-nav-item > span:last-child'))
+      .map((el) => el.textContent);
+    assert.deepStrictEqual(globalLabels, ['Overview', 'Projects', 'Documentation']);
+
+    // Inside a project the sidebar lists the canonical sections in order.
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/files?tab=drive`);
+    const projectLabels = Array.from(ctx.doc.querySelectorAll('#c-project-nav .c-nav-item > span:last-child'))
+      .map((el) => el.textContent);
+    assert.deepStrictEqual(projectLabels, ['Overview', 'Data', 'Files', 'API', 'Connect', 'Settings']);
+
+    // The canonical files route renders the Drive surface.
+    assert.ok(ctx.text().includes('logo.png'), 'Drive renders under /files?tab=drive');
+
+    // Legacy deep-link slugs still resolve to the canonical sections.
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/drive`);
+    assert.ok(ctx.text().includes('logo.png'), 'legacy /drive deep link still works');
+
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/api`);
+    assert.ok(ctx.text().includes('Endpoints'), 'canonical /api section renders');
   });
 
   it('documents the document database honestly (never PostgreSQL) on the DB view', async function () {
@@ -246,5 +288,280 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.ok(ctx.text().includes('users'));
     // Any usage docs reachable from this view reject SQL/Postgres framing.
     assert.ok(!/PostgreSQL database|Postgres database/i.test(ctx.text()));
+  });
+
+  it('makes "+" open the New Collection builder and stores explicit metadata', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data`);
+    // The Data section's primary action is "+ New collection" — never a
+    // record shortcut.
+    const plusButton = ctx.all('button').find((b) => /New collection/.test(b.textContent));
+    assert.ok(plusButton, '"New collection" primary button exists');
+    click(plusButton);
+    await tick(20);
+
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'New Collection dialog opens');
+    assert.ok(ctx.text().includes('Collection name'), 'name field present');
+    assert.ok(dialog.querySelector('textarea'), 'description field present');
+    const addField = Array.from(dialog.querySelectorAll('button'))
+      .find((b) => /Add field/.test(b.textContent));
+    assert.ok(addField, 'field builder present');
+
+    // Build one select field with options and a default.
+    click(addField);
+    await tick(10);
+    const fieldName = dialog.querySelector('input[placeholder="field_name"]');
+    fieldName.value = 'status';
+    fieldName.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    const typeSelect = dialog.querySelector('select.c-input');
+    typeSelect.value = 'select';
+    typeSelect.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+    await tick(10);
+    // Re-rendered row: the options input is now visible and keeps its value.
+    const optionsInput = dialog.querySelector('input[placeholder="a, b, c"]');
+    assert.ok(optionsInput && !optionsInput.hidden, 'select options input visible');
+    optionsInput.value = 'draft, live, archived';
+    optionsInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    const defaultInput = dialog.querySelector('input[placeholder="default"]');
+    assert.ok(defaultInput && !defaultInput.hidden, 'select default input visible');
+    defaultInput.value = 'draft';
+    defaultInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+
+    const nameInput = dialog.querySelector('input[placeholder="products"]');
+    nameInput.value = 'products';
+    nameInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    dialog.querySelector('textarea').value = 'Product catalog';
+
+    const createBtn = Array.from(dialog.querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create collection');
+    click(createBtn);
+    await tick(40);
+
+    const post = ctx.calls.find((c) => c.method === 'POST' && c.url.endsWith('/db/collections'));
+    assert.ok(post, 'POST /db/collections fired');
+    assert.deepStrictEqual(post.body, {
+      name: 'products',
+      description: 'Product catalog',
+      fields: [{
+        name: 'status',
+        type: 'select',
+        required: false,
+        options: ['draft', 'live', 'archived'],
+        default: 'draft',
+      }],
+    });
+  });
+
+  it('rejects builder mistakes next to the control: select without options', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data`);
+    click(ctx.all('button').find((b) => /New collection/.test(b.textContent)));
+    await tick(20);
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => /Add field/.test(b.textContent)));
+    await tick(10);
+    const typeSelect = dialog.querySelector('select.c-input');
+    typeSelect.value = 'select';
+    typeSelect.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+    await tick(10);
+    const nameInput = dialog.querySelector('input[placeholder="products"]');
+    nameInput.value = 'products';
+    nameInput.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    click(Array.from(dialog.querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create collection'));
+    await tick(40);
+    // The controlled hint appears; nothing was sent.
+    assert.ok(/Select fields need at least one option/.test(ctx.text()));
+    assert.ok(!ctx.calls.some((c) => c.method === 'POST' && c.url.endsWith('/db/collections')));
+  });
+
+  it('API Explorer shows method, auth, request body, response, and cURL/JS examples', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/api?tab=explorer`);
+    assert.deepStrictEqual(ctx.errors, []);
+
+    // The five generic CRUD operations, in order.
+    const cards = ctx.all('[data-explorer-endpoint]');
+    assert.deepStrictEqual(cards.map((c) => c.getAttribute('data-explorer-endpoint')),
+      ['GET', 'POST', 'GET', 'PATCH', 'DELETE']);
+
+    // Every card shows authentication.
+    for (const card of cards) {
+      assert.ok(card.textContent.includes('Bearer tg_live_…'), 'auth shown');
+      assert.ok(card.textContent.includes('Response'), 'response example shown');
+    }
+    // Request bodies only on POST/PATCH/DELETE.
+    const withBody = cards.filter((c) => c.textContent.includes('Request body'));
+    assert.strictEqual(withBody.length, 3, 'request body sections on mutating endpoints');
+
+    // cURL visible by default; the JavaScript tab switches the snippet.
+    assert.match(ctx.text(), /curl -s/);
+    const jsTab = Array.from(cards[0].querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'JavaScript');
+    click(jsTab);
+    await tick(10);
+    assert.match(cards[0].textContent, /await fetch\(/);
+
+    // Record-level cards carry a record-ID input; Try-it refuses to run
+    // without one and performs no request.
+    const recordCards = cards.filter((c) => c.getAttribute('data-explorer-endpoint') !== 'GET'
+      || c.textContent.includes('Read one document'));
+    const idInputs = cards.map((c) => c.querySelector('input[aria-label="Record ID"]')).filter(Boolean);
+    assert.strictEqual(idInputs.length, 3);
+    const tryIt = Array.from(cards[2].querySelectorAll('button')).find((b) => b.textContent.trim() === 'Try it');
+    const callsBefore = ctx.calls.length;
+    click(tryIt);
+    await tick(20);
+    // The guard announces through the aria-live region (asserted there: the
+    // toast element is cached per module instance across harness boots).
+    assert.ok(/Enter a record ID/.test(ctx.doc.getElementById('c-live').textContent), 'guarded toast');
+    assert.strictEqual(ctx.calls.length, callsBefore, 'no request without a record ID');
+
+    // A typed record ID flows into the copied snippets.
+    const idCard = cards[2];
+    idInputs[0].value = 'rec_test0001';
+    idInputs[0].dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    await tick(10);
+    click(Array.from(idCard.querySelectorAll('button')).find((b) => b.textContent.trim() === 'cURL'));
+    await tick(10);
+    assert.ok(idCard.textContent.includes('rec_test0001'), 'snippet uses the entered ID');
+
+    // The Explorer links the OpenAPI documents.
+    assert.ok(ctx.all('a').some((a) => (a.getAttribute('href') || '').endsWith('/openapi.json')));
+  });
+
+  it('Connect center: sections, project-specific examples, secrets never persisted', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/connect`);
+    assert.deepStrictEqual(ctx.errors, []);
+
+    // The four onboarding sections exist.
+    for (const id of ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk', 'connect-agents']) {
+      assert.ok(ctx.doc.getElementById(id), `section ${id} present`);
+    }
+
+    // Project-specific examples: all three variables with real values.
+    const text = ctx.text();
+    const origin = ctx.win.location.origin;
+    assert.ok(text.includes('TELEGRAPH_URL'), 'TELEGRAPH_URL documented');
+    assert.ok(text.includes(`TELEGRAPH_PROJECT=${PROJECT.project_id}`), 'env embeds the project id');
+    assert.ok(text.includes(`TELEGRAPH_URL=${origin}`), 'env embeds the origin');
+    const pres = Array.from(ctx.doc.querySelectorAll('pre')).map((pre) => pre.textContent);
+    assert.ok(pres.some((code) => code.includes('$TELEGRAPH_API_KEY')), 'cURL reads the key from the environment');
+    assert.ok(pres.some((code) => code.includes('process.env.TELEGRAPH_API_KEY')), 'JavaScript example reads the key from the environment');
+    assert.ok(pres.some((code) => code.includes('telegraph_project')), 'JSON config present');
+
+    // Before issuing: no secret material anywhere.
+    const SECRET = 'tg_live_key_secret_once_only_value_0123456789';
+    assert.ok(!text.includes(SECRET), 'no secret before issuing');
+    assert.ok(!ctx.win.location.hash.includes('tg_live'), 'no secret in the URL');
+
+    // Existing credential creation flow intact: issue → one-time reveal → .env.
+    click(ctx.all('button').find((b) => b.textContent.trim() === 'Issue API key'));
+    await tick(20);
+    let dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'issue dialog opens');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Create & reveal'));
+    await tick(40);
+    dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog && dialog.textContent.includes(SECRET), 'one-time secret dialog shows the key');
+    click(Array.from(dialog.querySelectorAll('button')).find((b) => /I saved the secret/.test(b.textContent)));
+    await tick(40);
+    // The .env block now carries the key — in memory only.
+    const envPre = Array.from(ctx.doc.querySelectorAll('pre')).map((pre) => pre.textContent)
+      .find((code) => code.includes(`TELEGRAPH_PROJECT=${PROJECT.project_id}`));
+    assert.ok(envPre && envPre.includes(SECRET), '.env updated with the issued key');
+
+    // After issuing: the secret is in the DOM (in-memory page state) but
+    // never in localStorage/sessionStorage or any URL.
+    for (const storage of [ctx.win.localStorage, ctx.win.sessionStorage]) {
+      const values = Array.from({ length: storage.length }, (_, i) => storage.getItem(storage.key(i))).join('\n');
+      assert.ok(!values.includes('tg_live'), 'no secret in web storage');
+    }
+    assert.ok(!ctx.win.location.href.includes('tg_live'), 'no secret in the URL');
+  });
+
+  it('AI Agent section: agent prompts are project-specific, mandated, and secret-free', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/connect`);
+
+    // Issue a key first: even with a secret in page memory, the generated
+    // agent prompt must never contain it.
+    click(ctx.all('button').find((b) => b.textContent.trim() === 'Issue API key'));
+    await tick(20);
+    click(Array.from(ctx.doc.querySelector('.c-dialog').querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create & reveal'));
+    await tick(40);
+    click(Array.from(ctx.doc.querySelectorAll('.c-dialog button'))
+      .find((b) => /I saved the secret/.test(b.textContent)));
+    await tick(40);
+
+    // Five supported agents.
+    const tabs = ctx.all('#connect-agents [data-agent]');
+    assert.deepStrictEqual(tabs.map((t) => t.dataset.agent),
+      ['generic', 'claude-code', 'cursor', 'codex', 'gemini-cli']);
+
+    const promptText = () => Array.from(ctx.doc.querySelectorAll('#connect-agents pre'))
+      .map((pre) => pre.textContent).join('\n');
+    let prompt = promptText();
+    const origin = ctx.win.location.origin;
+
+    // Project-specific facts.
+    assert.ok(prompt.includes(`Telegraph Cloud URL: ${origin}`), 'deployment URL');
+    assert.ok(prompt.includes(`Project ID: ${PROJECT.project_id}`), 'project id');
+    assert.ok(prompt.includes(`${origin}/openapi.json`), 'OpenAPI URL');
+    assert.ok(prompt.includes(`${origin}/docs/ai`), 'documentation URL');
+    for (const name of ['TELEGRAPH_URL', 'TELEGRAPH_PROJECT', 'TELEGRAPH_API_KEY']) {
+      assert.ok(prompt.includes(name), `env var name: ${name}`);
+    }
+    assert.ok(prompt.includes('Authorization: Bearer $TELEGRAPH_API_KEY'), 'auth instructions');
+    assert.ok(prompt.includes('/api/db/{collection}'), 'capabilities: document CRUD');
+    assert.ok(prompt.includes('ListObjectsV2'), 'capabilities: S3 endpoint');
+
+    // The six mandated behaviors.
+    assert.ok(/1\. Read the documentation first/.test(prompt), 'mandate: docs first');
+    assert.ok(/2\. Inspect the existing repository/.test(prompt), 'mandate: inspect repo');
+    assert.ok(/3\. Reuse the existing integration/.test(prompt), 'mandate: reuse integration');
+    assert.ok(/4\. Do not create another database/.test(prompt), 'mandate: no second database');
+    assert.ok(/5\. Do not introduce PostgreSQL, Prisma, or Drizzle/.test(prompt), 'mandate: no SQL stack');
+    assert.ok(/6\. Never commit secrets/.test(prompt), 'mandate: never commit secrets');
+
+    // Never a secret value — before and after issuing.
+    assert.ok(!prompt.includes('tg_live_'), 'no secret material in the prompt');
+    assert.ok(!prompt.includes('tg_live_key_secret_once_only_value_0123456789'), 'no issued secret');
+
+    // Claude Code flavor prefixes the agent identity and its notes file.
+    click(tabs.find((t) => t.dataset.agent === 'claude-code'));
+    await tick(10);
+    prompt = promptText();
+    assert.ok(prompt.includes('You are Claude Code') && prompt.includes('CLAUDE.md'), 'flavor preamble');
+
+    // "Paste this prompt" copies the exact prompt (never a secret).
+    click(Array.from(ctx.doc.querySelectorAll('#connect-agents button'))
+      .find((b) => b.textContent.trim() === 'Paste this prompt'));
+    await tick(20);
+    const copied = String(ctx.copied());
+    assert.ok(copied.includes(`Project ID: ${PROJECT.project_id}`), 'clipboard carries the prompt');
+    assert.ok(copied.includes('Never commit secrets'), 'clipboard carries the mandates');
+    assert.ok(!copied.includes('tg_live_'), 'clipboard never carries the secret');
+    assert.ok(/Prompt copied — paste it into/.test(ctx.doc.getElementById('c-live').textContent), 'confirming toast');
+  });
+
+  it('creates records only inside the open collection (no implicit collections)', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/data?tab=records&collection=users`);
+    const newRecord = ctx.all('button').find((b) => /New record/.test(b.textContent));
+    assert.ok(newRecord, 'New record button exists');
+    click(newRecord);
+    await tick(20);
+
+    const dialog = ctx.doc.querySelector('.c-dialog');
+    assert.ok(dialog, 'record dialog opens');
+    assert.ok(ctx.text().includes('New record · users'), 'dialog is scoped to the open collection');
+    const collectionInput = dialog.querySelector('input[aria-label="Collection"]');
+    assert.ok(collectionInput, 'collection field rendered');
+    assert.strictEqual(collectionInput.disabled, true, 'collection is fixed, not typeable');
+    assert.strictEqual(collectionInput.value, 'users');
   });
 });

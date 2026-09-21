@@ -34,14 +34,14 @@ function check(name, passed, detail = '') {
 }
 
 async function openDashboard(page) {
-  await page.goto(BASE + '/admin', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/admin-legacy', { waitUntil: 'networkidle' });
   await page.waitForTimeout(500);
   if (await page.locator('#username').count()) {
     await page.fill('#username', USER);
     await page.fill('#password', PASS);
     await page.click('#submit-btn');
   }
-  await page.waitForURL(/\/admin(?:[?#]|$)/, { timeout: 10000 });
+  await page.waitForURL(/\/admin-legacy(?:[?#]|$)/, { timeout: 10000 });
   await page.locator('#file-stage').waitFor({ state: 'attached', timeout: 10000 });
   await page.waitForTimeout(700);
 }

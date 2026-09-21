@@ -39,7 +39,7 @@ English|[中文](README-zh.md)
 
 3. After deployment, go to the project's `Settings` -> `Environment Variables`, add `TG_Bot_Token` and `TG_Chat_ID` (see [the next section](#how-to-obtain-telegram-bot_token-and-chat_id) for how to obtain them), save, then go to the `Deployments` page and **redeploy once**
 
-Done! Open your `*.pages.dev` domain to read the product overview, then choose **Open Dashboard**. The canonical routes are `/` for the landing page, `/login` for GUI sign-in, and `/admin` for staging, sequential Push, Albums, public-link output, and remote management.
+Done! Open your `*.pages.dev` domain to read the product overview, then choose **Open Dashboard**. The canonical routes are `/` for the landing page, `/login` for GUI sign-in, and `/console` — the single management UI with global Overview, Projects, and Documentation plus per-project Overview, Data, Files, API, Connect, and Settings. The legacy media workspace (staging, sequential Push, Albums, public-link output, and remote management) is preserved at `/admin-legacy` and linked from the console as **Legacy Media**; `/admin` redirects into `/console` for compatibility with old bookmarks.
 
 ## How to Obtain Telegram `Bot_Token` and `Chat_ID`
 
@@ -79,7 +79,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 
 | Environment Variable | Example Value              | Description                                                                            |
 |---------------------|---------------------------|----------------------------------------------------------------------------------------|
-| `BASIC_USER`        | `admin`                   | Login username for the dashboard (/admin). Leave unset for a dashboard without login. |
+| `BASIC_USER`        | `admin`                   | Login username for the dashboard (/console and its legacy workspace). Leave unset for a dashboard without login. |
 | `BASIC_PASS`        | `admin-password`          | Login password for the dashboard. Must be set together with `BASIC_USER`.            |
 | `SESSION_SECRET`    | `long-random-string`      | Optional but recommended. Secret used to sign the GUI sign-in session cookie. When unset, it is derived deterministically from `BASIC_USER`/`BASIC_PASS` so existing deployments keep working without configuration; set an explicit random value in production. |
 | `API_KEY_PEPPER`    | `openssl rand -base64 48` | Required to create or verify Phases 3–5 `tg_live_…` developer keys and protect Phase 5/5.1 object-list/repair tokens. Use a unique random Cloudflare **Secret** of at least 32 bytes per environment. It is not a dashboard password or S3 signing secret and must never be sent to a browser, Telegram, document record, or object metadata. Replacing it invalidates existing developer keys and outstanding developer/object-list/repair tokens; follow the disruptive [pepper rotation procedure](docs/telegraph-cloud-production-readiness.md#62-emergency-rotation-api_key_pepper). |
@@ -107,7 +107,7 @@ Optional environment variables (enable features as needed, see the [Optional Fea
 | `SITE_NAME`         | `My Images`               | Site name shown in the homepage header (served to the frontend via `GET /api/config`). |
 | `SITE_TITLE`        | `My Images \| Home`       | Browser tab title of the homepage.                                                    |
 | `SITE_BACKGROUND`   | `https://.../bg.jpg`      | Background image URL for the homepage.                                                |
-| `HIDE_ADMIN_ENTRY`  | `true`                    | Legacy/custom-frontend hint returned by `/api/config`; the product landing keeps its canonical `/admin` action visible. |
+| `HIDE_ADMIN_ENTRY`  | `true`                    | Legacy/custom-frontend hint returned by `/api/config`; the product landing keeps its canonical `/console` action visible. |
 | `WhiteList_Mode`    | `true`                    | Whitelist mode: only whitelisted images can be loaded.                                |
 | `disable_telemetry` | `true`                    | Opt out of remote telemetry.                                                          |
 
@@ -172,12 +172,12 @@ The release candidate is not production-approved merely because local tests pass
 
 ### Telegraph Storage Dashboard
 
-Disabled by default. To enable: in the Cloudflare Pages backend, click `Settings` -> `Functions` -> `KV namespace bindings` -> `Edit bindings`, enter `img_url` as the `Variable name`, select a pre-created KV namespace as the `KV namespace`, redeploy, then visit http(s)://your-domain/admin to open the dashboard
+Disabled by default. To enable: in the Cloudflare Pages backend, click `Settings` -> `Functions` -> `KV namespace bindings` -> `Edit bindings`, enter `img_url` as the `Variable name`, select a pre-created KV namespace as the `KV namespace`, redeploy, then visit http(s)://your-domain/console to open the dashboard
 
 ![](https://im.gurl.eu.org/file/a0c212d5dfb61f3652d07.png)
 ![](https://im.gurl.eu.org/file/48b9316ed018b2cb67cf4.png)
 
-The `/admin` dashboard combines browser-local staging with the remote management index. Added files remain local until an explicit **Push**, which sends one request at a time with an inter-file delay, bounded retry/backoff, pause/cancel controls, partial-failure reporting, and retry-failed support. The same workspace provides filename search, paginated remote loading, grid/list/masonry views, MIME-aware previews, nested Albums, safe URL/Markdown/BBCode/HTML output, rename, save/unsave, blacklist/whitelist management, multi-select bulk actions, record deletion, tools, and a keyboard-first command palette.
+The legacy media workspace (`/admin-legacy`, linked from the console as **Legacy Media**) combines browser-local staging with the remote management index. Added files remain local until an explicit **Push**, which sends one request at a time with an inter-file delay, bounded retry/backoff, pause/cancel controls, partial-failure reporting, and retry-failed support. The same workspace provides filename search, paginated remote loading, grid/list/masonry views, MIME-aware previews, nested Albums, safe URL/Markdown/BBCode/HTML output, rename, save/unsave, blacklist/whitelist management, multi-select bulk actions, record deletion, tools, and a keyboard-first command palette.
 
 Note: the dashboard "delete" action only removes the record from the list; it does not delete the source file from Telegram. To prevent a file from loading, use the blacklist feature.
 
@@ -193,13 +193,13 @@ Disabled by default. To enable, add the following environment variables:
 
 The admin area ships with a Material 3 sign-in screen at `/login`. After signing in, an **HttpOnly, Secure, SameSite=Lax** session cookie is issued (valid for 7 days); credentials are never stored in the browser. If `BASIC_USER` is left unset, the dashboard stays open without a login — this keeps it compatible with Cloudflare Access or any reverse proxy that already authenticates traffic. Set `SESSION_SECRET` to a long random value in production; when it is unset it is derived from `BASIC_USER`/`BASIC_PASS` so upgrades require no new configuration.
 
-The legacy HTTP Basic scheme is still accepted as a deliberate fallback for scripts and `curl`, but the API no longer sends a `WWW-Authenticate` challenge, so browsers are never prompted with the native credential dialog — the GUI handles sign-in instead. Endpoints: `POST /api/manage/login` (JSON `{user,password}`), `POST /api/manage/logout`, and `GET /api/manage/session`. To front the dashboard with Cloudflare Access, protect both `/admin` and `/api/manage/*`.
+The legacy HTTP Basic scheme is still accepted as a deliberate fallback for scripts and `curl`, but the API no longer sends a `WWW-Authenticate` challenge, so browsers are never prompted with the native credential dialog — the GUI handles sign-in instead. Endpoints: `POST /api/manage/login` (JSON `{user,password}`), `POST /api/manage/logout`, and `GET /api/manage/session`. To front the dashboard with Cloudflare Access, protect both `/console` and `/api/manage/*` (plus `/admin-legacy` if you use the legacy workspace).
 
 ### Telegraph Cloud Console (Phase 7)
 
 After enabling the Cloud bindings (see [Telegraph Cloud foundations](#telegraph-cloud-foundations-database-projects-and-objects-phases-16b)), sign in and visit `/console`: a polished cloud console (Google Drive + Cloudflare/Supabase-style) that consumes the Phase 1–6C APIs without changing the backend. Global sections are **Overview / Projects / Documentation / Settings**; each project has **Overview, Drive, Database (Telegraph Database — a document database, never PostgreSQL), S3, API Keys, S3 Credentials, Connect, Settings**. The Drive shares the same object engine as `/api/storage/*` and `/s3/*`: drag-and-drop uploads with progress/retry, nested folders, rename, move, star, trash/restore, search/sort, grid/list, multi-select bulk actions, keyboard shortcuts, context menu, breadcrumbs, MIME-aware previews, a details drawer, and Direct URL/Markdown/HTML/BBCode/CSS snippets.
 
-Public, unlisted direct links are served read-only at `GET/HEAD /p/:projectId/:bucket/*key`; they work anonymously, trashing an object revokes its link, and there are no anonymous writes, presigned URLs, or per-file passwords. API keys (`tg_live_…`, Bearer) and S3 credentials (`tgsk_live_…`, SigV4) are managed separately, are scoped, and reveal their plaintext exactly once — never via localStorage, URLs, or logs. The S3 section lists only the operations the adapter actually implements. The legacy `/admin` workspace remains linked as **Legacy Media**, and `/file/*` links are untouched. The console is fully internationalized (English + Chinese on the existing `ti.lang` system), responsive, keyboard/screen-reader accessible, and reduced-motion aware. Full reference: [docs/telegraph-cloud-console.md](docs/telegraph-cloud-console.md).
+Public, unlisted direct links are served read-only at `GET/HEAD /p/:projectId/:bucket/*key`; they work anonymously, trashing an object revokes its link, and there are no anonymous writes, presigned URLs, or per-file passwords. API keys (`tg_live_…`, Bearer) and S3 credentials (`tgsk_live_…`, SigV4) are managed separately, are scoped, and reveal their plaintext exactly once — never via localStorage, URLs, or logs. The S3 section lists only the operations the adapter actually implements. The legacy workspace (`/admin-legacy`; `/admin` redirects into the console) remains linked as **Legacy Media**, and `/file/*` links are untouched. The console is fully internationalized (English + Chinese on the existing `ti.lang` system), responsive, keyboard/screen-reader accessible, and reduced-motion aware. Full reference: [docs/telegraph-cloud-console.md](docs/telegraph-cloud-console.md).
 
 ### Upload Protection
 
@@ -262,7 +262,7 @@ The direct **URL** output is always the untouched public `/file/...` URL. Filena
 
 ### Albums
 
-Albums group local staged files and remote objects into a nested, Drive-like hierarchy in the unified dashboard (`/admin`). They are enabled automatically and need **no new binding or environment variable**.
+Albums group local staged files and remote objects into a nested, Drive-like hierarchy in the legacy media workspace (`/admin-legacy`). They are enabled automatically and need **no new binding or environment variable**.
 
 How it works:
 
@@ -406,7 +406,7 @@ With the image management feature enabled, Cloudflare KV free quotas also apply:
 - Cloudflare KV only has a free write quota of 1000 times per day. Each new image loaded will consume this write quota. If this quota is exceeded, the image management backend will not be able to record newly loaded images
 - Maximum of 100,000 free read operations per day. Each image load will consume this quota (when there is no cache. If your domain has cache enabled on Cloudflare, this quota will only be consumed when the cache misses). If exceeded, blacklist and whitelist features may fail
 - Maximum of 1,000 free delete operations per day. Each image record will consume this quota. If exceeded, you will not be able to delete image records
-- Maximum of 1,000 free list operations per day. Each time you open or refresh the backend /admin, it will consume this quota. If exceeded, backend image management will be affected
+- Maximum of 1,000 free list operations per day. Each time you open or refresh a management dashboard (/console or /admin-legacy), it will consume this quota. If exceeded, backend image management will be affected
 
 In most cases, the free quota is basically sufficient and can be slightly exceeded. It doesn't stop immediately when exceeded. Each quota is calculated separately. When a certain operation exceeds the free quota, only that operation will be suspended and will not affect other functions. That is, even if my free write quota is used up, my read and write functions are not affected, images can load normally, I just can't see new images in the image management backend.
 
@@ -459,13 +459,18 @@ npm run test:e2e   # terminal 2
 
 The end-to-end suite covers batch upload, drag-and-drop, file retrieval and Content-Type, all four output formats, the setup self-check notice, and the dashboard; screenshots land in `test/e2e/output/`. Env vars: `E2E_BASE_URL` (default http://localhost:8080) and `E2E_CHROMIUM` (path to a Chromium binary, for environments where Playwright cannot download its own).
 
-> The dashboard (`/admin`) is a dependency-free static page that shares the Material 3 design system with the landing and sign-in pages, so it renders with no external CDN dependency. The end-to-end suite signs in through the GUI with `BASIC_USER=admin` / `BASIC_PASS=123` from `npm start`; if Chromium is unavailable, it reports that limitation explicitly.
+> The dashboards (`/console` and the legacy `/admin-legacy`) are dependency-free static pages that share the Material 3 design system with the landing and sign-in pages, so they render with no external CDN dependency. The end-to-end suite signs in through the GUI with `BASIC_USER=admin` / `BASIC_PASS=123` from `npm start`; if Chromium is unavailable, it reports that limitation explicitly.
 
 ### Thanks
 
 Ideas and code provided by Hostloc @feixiang and @乌拉擦
 
 ## Update Log
+September 20, 2026 - Workspace modularization and console i18n catalog sync
+
+- Split the cohesive model/persistence clusters out of the 4,175-line `js/workspace.js` monolith into focused `js/workspace/` modules: `constants.js` (shared keys and limits), `items.js` (pure item model helpers and formatters), `db.js` (the IndexedDB layer for staged items and the local album catalog), and `preview.js` (the read-only text/code preview surface, decoupled from workspace state through an injected "still on screen" guard). The entry module keeps orchestration, state, and rendering; public behaviour is unchanged and the full behavioural DOM suite (485 tests) passes.
+- Synced the cloud console zh catalog with the collection-builder rework: the new empty-state and field-builder messages are translated and three stale keys are removed, so both console i18n guards pass again.
+
 September 13, 2026 - Telegraph Cloud Phase 6C Production Hardening
 
 - Added a minimal public `/api/health` signal, dashboard-authenticated enum-only `/api/projects/diagnostics` (including an opt-in no-detail Telegram `getMe` reachability probe), and fixed-metadata sampled operational tags. No diagnostic returns secrets, binding values, project internals, or Telegram identifiers.
@@ -576,7 +581,7 @@ July 6, 2024 - Backend Management Page Update
 
 January 18, 2023 - Image Management Feature Update
 
-1. Support for image management feature, disabled by default. To enable, after deployment, go to the backend and click `Settings`->`Functions`->`KV Namespace Bindings`->`Edit Bindings`->`Variable Name` enter: `img_url` `KV Namespace` select the KV storage space you created in advance. After enabling, visit http(s)://your-domain/admin to open the backend management page
+1. Support for image management feature, disabled by default. To enable, after deployment, go to the backend and click `Settings`->`Functions`->`KV Namespace Bindings`->`Edit Bindings`->`Variable Name` enter: `img_url` `KV Namespace` select the KV storage space you created in advance. After enabling, visit http(s)://your-domain/console to open the backend management page
 | Variable Name | KV Namespace |
 | ----------- | ----------- |
 | img_url | Select the KV storage space created in advance |
@@ -592,7 +597,7 @@ January 18, 2023 - Image Management Feature Update
 
 ![](https://im.gurl.eu.org/file/dff376498ac87cdb78071.png)
 
-Of course, you can also choose not to set these two values, so that accessing the backend management page will not require verification and will skip the login step directly. This design allows you to use it in combination with Cloudflare Access to achieve email verification code login, Microsoft account login, Github account login, and other functions. It can be integrated with the existing login method on your domain without having to remember another set of backend credentials. For adding Cloudflare Access, please refer to the official documentation. Note that the protected path needs to include /admin and /api/manage/\*
+Of course, you can also choose not to set these two values, so that accessing the backend management page will not require verification and will skip the login step directly. This design allows you to use it in combination with Cloudflare Access to achieve email verification code login, Microsoft account login, Github account login, and other functions. It can be integrated with the existing login method on your domain without having to remember another set of backend credentials. For adding Cloudflare Access, please refer to the official documentation. Note that the protected path needs to include /console and /api/manage/\* (plus /admin-legacy if you use the legacy workspace)
 
 You can also protect the public upload endpoint separately by setting both `UPLOAD_BASIC_USER` and `UPLOAD_BASIC_PASS`. When these two variables are not set, uploads remain public for compatibility with existing deployments.
 

@@ -22,7 +22,7 @@ describe('Telegraph Storage landing page (DOM)', function () {
     assert.strictEqual(ctx.$('site-name').textContent, 'Telegraph Storage');
     assert.strictEqual(ctx.doc.title, 'Telegraph Storage');
     assert.strictEqual(ctx.doc.body.classList.contains('has-custom-background'), false);
-    assert.ok(ctx.doc.querySelector('a.landing-primary[href="/admin"]'));
+    assert.ok(ctx.doc.querySelector('a.landing-primary[href="/console"]'));
     assert.strictEqual(ctx.doc.querySelector('#file-input'), null, 'the landing page is not an uploader');
   });
 

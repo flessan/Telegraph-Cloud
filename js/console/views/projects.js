@@ -162,7 +162,7 @@ function projectMenu(anchor, project) {
     {
       title: ct('Drive'),
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.2A2.2 2.2 0 0 1 5.7 6h3.1l1.8 1.8h7.7A2.2 2.2 0 0 1 20.5 10v7.3a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2z"/></svg>',
-      onClick: () => navigate(projectPath(project.project_id, 'drive')),
+      onClick: () => navigate(projectPath(project.project_id, 'files', 'drive')),
     },
     {
       title: ct('Copy project ID'),

@@ -23,7 +23,7 @@ describe('workspace push queue (DOM)', function () {
 
   async function start(options = {}) {
     ctx = await boot({
-      page: 'admin.html',
+      page: 'admin-legacy.html',
       module: 'js/workspace.js',
       routes,
       prefs: { ...prefs, ...(options.prefs || {}) },
@@ -279,7 +279,7 @@ describe('workspace MIME-aware output (DOM)', function () {
 
   async function start(language = 'en') {
     ctx = await boot({
-      page: 'admin.html',
+      page: 'admin-legacy.html',
       module: 'js/workspace.js',
       routes,
       language,

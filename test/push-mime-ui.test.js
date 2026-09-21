@@ -13,7 +13,7 @@ const workspaceJs = read('js/workspace.js');
 const adminJs = read('js/admin.js');
 const mimeJs = read('js/mime.js');
 const queueJs = read('js/push-queue.js');
-const adminHtml = read('admin.html');
+const adminHtml = read('admin-legacy.html');
 const workspaceCss = read('css/workspace.css');
 const appCss = read('css/app.css');
 

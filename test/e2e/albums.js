@@ -58,14 +58,14 @@ function makePng(file) {
 }
 
 async function openDashboard(page) {
-  await page.goto(BASE + '/admin', { waitUntil: 'networkidle' });
+  await page.goto(BASE + '/admin-legacy', { waitUntil: 'networkidle' });
   await page.waitForTimeout(500);
   if (await page.locator('#username').count()) {
     await page.fill('#username', USER);
     await page.fill('#password', PASS);
     await page.click('#submit-btn');
   }
-  await page.waitForURL(/\/admin(?:[?#]|$)/, { timeout: 10000 });
+  await page.waitForURL(/\/admin-legacy(?:[?#]|$)/, { timeout: 10000 });
   await page.locator('#file-stage').waitFor({ state: 'attached', timeout: 10000 });
   await page.waitForTimeout(700);
 }
@@ -252,14 +252,14 @@ async function dragTo(page, sourceSel, targetSel) {
   // --- 9. Bahasa Indonesia
   const idCtx = await browser.newContext({ locale: 'id-ID' });
   const idPage = await idCtx.newPage();
-  await idPage.goto(BASE + '/admin', { waitUntil: 'networkidle' });
+  await idPage.goto(BASE + '/admin-legacy', { waitUntil: 'networkidle' });
   await idPage.waitForTimeout(500);
   if (await idPage.locator('#username').count()) {
     await idPage.fill('#username', USER);
     await idPage.fill('#password', PASS);
     await idPage.click('#submit-btn');
   }
-  await idPage.waitForURL(/\/admin(?:[?#]|$)/, { timeout: 10000 });
+  await idPage.waitForURL(/\/admin-legacy(?:[?#]|$)/, { timeout: 10000 });
   await idPage.locator('#file-stage').waitFor({ state: 'attached', timeout: 10000 });
   await idPage.waitForTimeout(700);
   const idText = await idPage.textContent('body');

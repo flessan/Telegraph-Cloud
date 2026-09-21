@@ -1,6 +1,24 @@
 import { h, copyText, esc, isNode } from '../util.js';
 import { toast, openDialog, field } from '../ui.js';
 import { ct } from '../i18n.js';
+import { projectPath } from '../router.js';
+
+// Section sub-tabs (Data: collections/records/schema, Files: drive/objects/s3,
+// API: endpoints/keys/explorer/docs). Tabs are hash links, so deep links and
+// browser back/forward keep working without client-side tab state.
+export function subTabs(projectId, section, current, items) {
+  const bar = h('div', { class: 'c-subtabs', role: 'tablist' });
+  for (const item of items) {
+    const active = item.tab === current;
+    bar.append(h('a', {
+      role: 'tab',
+      class: `c-subtab${active ? ' is-active' : ''}`,
+      'aria-selected': String(active),
+      href: projectPath(projectId, section, item.tab),
+    }, item.label()));
+  }
+  return bar;
+}
 
 export function statCard({ icon, value, label, note = null }) {
   return h('div', { class: 'c-card c-stat' }, [

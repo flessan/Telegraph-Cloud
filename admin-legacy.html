@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex,nofollow">
   <meta name="description" content="Telegraph Storage dashboard — stage, review, push, organize, and manage remote objects.">
   <meta name="color-scheme" content="light dark">
-  <link rel="canonical" href="/admin">
+  <link rel="canonical" href="/admin-legacy">
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <title>Dashboard · Telegraph Storage</title>
   <link rel="stylesheet" href="/css/app.css">
@@ -15,12 +15,17 @@
 <body class="admin-workspace">
   <a class="skip-link" href="#browser" data-i18n="skipToContent">Skip to files</a>
 
+  <div class="legacy-banner" id="legacy-banner">
+    <span data-i18n="legacyBanner">This legacy workspace is preserved for compatibility. The unified console is the canonical home for projects, data, files, and API.</span>
+    <a href="/console" data-i18n="legacyBannerCta">Open the console</a>
+  </div>
+
   <div class="app" id="app">
     <header class="app-header">
       <button type="button" class="icon-btn drawer-toggle" id="drawer-toggle" aria-expanded="false" aria-controls="workspace-sidebar" data-i18n-aria="adminNavAria">
         <svg focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
-      <a class="brand" href="/admin" id="brand-link">
+      <a class="brand" href="/admin-legacy.html" id="brand-link">
         <span class="brand-mark" aria-hidden="true">
           <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3.5" y="8.5" width="13" height="12" rx="2"/>

@@ -10,11 +10,9 @@ import { toast } from './ui.js';
 import { renderOverview } from './views/global-overview.js';
 import { renderProjects } from './views/projects.js';
 import { renderProjectOverview } from './views/project-overview.js';
-import { renderDrive } from './views/drive.js';
-import { renderDatabase } from './views/database.js';
-import { renderS3 } from './views/s3.js';
-import { renderApiKeys } from './views/api-keys.js';
-import { renderS3Credentials } from './views/s3-credentials.js';
+import { renderData } from './views/data.js';
+import { renderFiles } from './views/files.js';
+import { renderApi } from './views/api.js';
 import { renderConnect } from './views/connect.js';
 import { renderProjectSettings } from './views/project-settings.js';
 import { renderDocs } from './views/docs.js';
@@ -37,20 +35,24 @@ const svg = {
 // Labels are thunks so their literal source messages stay statically
 // extractable (the i18n coverage test scans for ct calls with literal
 // first arguments) and language switches retranslate the chrome on re-render.
+// Global navigation is exactly three items (Overview, Projects,
+// Documentation) per the canonical IA. Console preferences live behind the
+// topbar settings button (#/settings), which remains a working deep link.
 const GLOBAL_ITEMS = [
   { route: 'overview', hash: '#/overview', label: () => ct('Overview'), icon: svg.overview },
   { route: 'projects', hash: '#/projects', label: () => ct('Projects'), icon: svg.projects },
   { route: 'docs', hash: '#/docs', label: () => ct('Documentation'), icon: svg.docs },
-  { route: 'settings', hash: '#/settings', label: () => ct('Settings'), icon: svg.settings },
 ];
 
+// Canonical project information architecture:
+//   Overview | Data | Files | API | Connect | Settings
+// (Data = collections + records + schemas; Files = Drive + Objects + S3;
+//  API = endpoints + API keys + explorer + documentation.)
 const PROJECT_ITEMS = [
   { section: 'overview', label: () => ct('Overview'), icon: svg.overview },
-  { section: 'drive', label: () => ct('Drive'), icon: svg.drive },
-  { section: 'database', label: () => ct('Telegraph Database'), icon: svg.database },
-  { section: 's3', label: () => ct('S3'), icon: svg.s3 },
-  { section: 'keys', label: () => ct('API Keys'), icon: svg.key },
-  { section: 's3-credentials', label: () => ct('S3 Credentials'), icon: svg.shield },
+  { section: 'data', label: () => ct('Data'), icon: svg.database },
+  { section: 'files', label: () => ct('Files'), icon: svg.drive },
+  { section: 'api', label: () => ct('API'), icon: svg.key },
   { section: 'connect', label: () => ct('Connect'), icon: svg.connect },
   { section: 'settings', label: () => ct('Settings'), icon: svg.settings },
 ];
@@ -174,11 +176,9 @@ async function route() {
       case 'project': {
         const { id, section } = parsed.params;
         switch (section) {
-          case 'drive': return renderDrive(main, id, parsed.query);
-          case 'database': return renderDatabase(main, id, parsed.query);
-          case 's3': return renderS3(main, id);
-          case 'keys': return renderApiKeys(main, id);
-          case 's3-credentials': return renderS3Credentials(main, id);
+          case 'data': return renderData(main, id, parsed.query);
+          case 'files': return renderFiles(main, id, parsed.query);
+          case 'api': return renderApi(main, id, parsed.query);
           case 'connect': return renderConnect(main, id);
           case 'settings': return renderProjectSettings(main, id);
           default: return renderProjectOverview(main, id);
@@ -216,6 +216,13 @@ function setupChrome() {
         { title: t('langId'), onClick: () => setLanguage('id') },
       ]);
     });
+  });
+
+  // Console preferences (appearance, language, compatibility links). Global
+  // Settings is intentionally not a sidebar item; this topbar button is its
+  // discoverable entry point and #/settings stays a valid deep link.
+  $('#c-console-settings-btn').addEventListener('click', () => {
+    navigate('#/settings');
   });
 
   $('#c-menu-toggle').addEventListener('click', () => {
