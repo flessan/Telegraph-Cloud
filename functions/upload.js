@@ -23,12 +23,17 @@ function safeUploadFailure(error) {
     const match = /^Telegram (?:sendPhoto|sendAudio|sendVideo|sendDocument) failed: (\d{3})\b/.exec(message);
     if (match) {
         const status = Number(match[1]);
-        if (status === 401) return { code: 'telegram_auth_failed', status: 502 };
-        if (status === 403) return { code: 'telegram_forbidden', status: 502 };
-        if (status === 404) return { code: 'telegram_not_found', status: 502 };
-        if (status === 413) return { code: 'file_too_large_for_provider', status: 413 };
-        if (status === 429) return { code: 'telegram_rate_limited', status: 429 };
-        if (status >= 500 && status <= 599) return { code: 'telegram_upstream_unavailable', status: 503 };
+        const kind = /\\[([a-z_]+)\\]/.exec(message)?.[1] || '';
+        if (status === 401 || kind === 'auth_failed') return { code: 'telegram_auth_failed', status: 502 };
+        if (status === 403 || kind === 'forbidden') return { code: 'telegram_forbidden', status: 502 };
+        if (status === 404 || kind === 'not_found') return { code: 'telegram_not_found', status: 502 };
+        if (status === 413 || kind === 'payload_too_large') return { code: 'file_too_large_for_provider', status: 413 };
+        if (status === 429 || kind === 'rate_limited') return { code: 'telegram_rate_limited', status: 429 };
+        if (status >= 500 && status <= 599 || kind === 'upstream_unavailable') {
+            return { code: 'telegram_upstream_unavailable', status: 503 };
+        }
+        if (kind === 'chat_not_found') return { code: 'telegram_chat_not_found', status: 502 };
+        if (kind === 'invalid_file') return { code: 'telegram_invalid_file', status: 502 };
         return { code: 'telegram_api_rejected', status: 502 };
     }
     if (message === 'Network error occurred') return { code: 'telegram_network_error', status: 503 };
