@@ -9,6 +9,8 @@ export const MAX_TELEGRAM_RETRY_DELAY_MS = 60 * 1000;
 const SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo', 'sendDocument']);
 const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
 const RETRYABLE_STATUS = new Set([408, 429]);
+const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
+const RETRYABLE_STATUS = new Set([408, 429]);
 const DOWNLOAD_FORWARD_HEADERS = [
   'Accept',
   'If-Modified-Since',
@@ -36,6 +38,32 @@ function isSafeTelegramFilePath(filePath) {
     && filePath.split('/').every((segment) => (
       SAFE_FILE_PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..'
     ));
+}
+
+function isRetryableStatus(status) {
+  return RETRYABLE_STATUS.has(status) || (status >= 500 && status <= 599);
+}
+
+function retryAfterMilliseconds(response, responseData, retryCount, randomImpl = Math.random) {
+  const candidates = [];
+  const header = response?.headers?.get?.('Retry-After');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) candidates.push(seconds * 1000);
+    else {
+      const retryDate = Date.parse(header);
+      if (Number.isFinite(retryDate)) candidates.push(retryDate - Date.now());
+    }
+  }
+  const telegramRetryAfter = responseData?.parameters?.retry_after;
+  if (Number.isFinite(telegramRetryAfter) && telegramRetryAfter >= 0) {
+    candidates.push(Number(telegramRetryAfter) * 1000);
+  }
+  const explicit = candidates.find((value) => Number.isFinite(value) && value >= 0);
+  const exponential = Math.min(1000 * (2 ** retryCount), 10 * 1000);
+  const jitter = Math.floor(Math.max(0, Math.min(1, Number(randomImpl()) || 0)) * 500);
+  const delay = explicit === undefined ? exponential + jitter : explicit;
+  return Math.max(250, Math.min(MAX_TELEGRAM_RETRY_DELAY_MS, Math.round(delay)));
 }
 
 function isRetryableStatus(status) {
@@ -223,15 +251,13 @@ export function createTelegramClient(env, {
         };
       }
 
-      // Telegram can reject media-specific endpoints for perfectly valid files
-      // because the selected media endpoint has stricter validation than a
-      // generic document upload. After non-retryable validation failures, keep
-      // the existing compatibility fallback for images and extend it to audio
-      // and video. Never use this fallback for a rate-limit/server failure.
       if (MEDIA_SEND_ENDPOINTS.has(apiEndpoint) && !fallbackUsed) {
         const fallback = new FormData();
         fallback.append('chat_id', formData.get('chat_id'));
-        fallback.append('document', formData.get(apiEndpoint === 'sendPhoto' ? 'photo' : apiEndpoint === 'sendAudio' ? 'audio' : 'video'));
+        fallback.append(
+          'document',
+          formData.get(apiEndpoint === 'sendPhoto' ? 'photo' : apiEndpoint === 'sendAudio' ? 'audio' : 'video'),
+        );
         return sendFormData(fallback, 'sendDocument', { retryCount: 0, fallbackUsed: true });
       }
 
@@ -240,8 +266,6 @@ export function createTelegramClient(env, {
         error: formatTelegramError(apiEndpoint, response, responseData),
       };
     } catch (_) {
-      // Error instances can include a requested URL. Never serialize them to
-      // console/Sentry because that URL carries the bot token in its path.
       if (retryCount < MAX_TELEGRAM_RETRIES) {
         await sleepImpl(retryAfterMilliseconds(null, null, retryCount, randomImpl));
         return sendFormData(formData, apiEndpoint, {
