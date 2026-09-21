@@ -1,7 +1,7 @@
 import { isEmptyBinding } from '../utils/http.js';
 import { S3_CREDENTIAL_PEPPER_ENV } from './s3-config.js';
 import { resolveS3ClockSkewSeconds, resolveS3EndpointHost } from './s3-sigv4.js';
-import { validateTelegramConfig, probeTelegramApi } from './telegram-client.js';
+import { validateTelegramConfig, probeTelegramApiDetailed } from './telegram-client.js';
 
 // This is a fixed, read-only lookup key. It is never written and its returned
 // value is deliberately ignored, so the check cannot expose or alter operator
@@ -108,8 +108,11 @@ export async function getOperatorReadiness(env = {}, { probeTelegram = false } =
     : 'not_ready';
 
   let telegramApi = 'not_probed';
+  let telegramApiReason = 'not_probed';
   if (probeTelegram) {
-    telegramApi = await probeTelegramApi(env) ? 'reachable' : 'unreachable';
+    const probe = await probeTelegramApiDetailed(env);
+    telegramApi = probe.status;
+    telegramApiReason = probe.reason;
   }
 
   // "ready_for_smoke" is intentionally weaker than "healthy": a read-only
@@ -131,6 +134,7 @@ export async function getOperatorReadiness(env = {}, { probeTelegram = false } =
       cloud_kv: cloudKv,
       telegram_configuration: telegram,
       telegram_api: telegramApi,
+      telegram_api_reason: telegramApiReason,
       api_key_verifier: apiKeyVerifier,
       s3_credential_verifier: s3CredentialVerifier,
       s3_endpoint: s3Endpoint,
