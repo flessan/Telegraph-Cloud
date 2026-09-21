@@ -105,19 +105,21 @@ export function validateTelegramConfig(env) {
  * prove channel permissions/write readiness. There is no retry here: a probe
  * must not turn one operator click into a Telegram request burst.
  */
-export async function probeTelegramApi(env, { fetchImpl = globalThis.fetch } = {}) {
+export async function probeTelegramApiDetailed(env, { fetchImpl = globalThis.fetch } = {}) {
   try {
     validateTelegramConfig(env);
-    if (typeof fetchImpl !== 'function') return false;
+    if (typeof fetchImpl !== 'function') return { status: 'unreachable', reason: 'network_error' };
     const response = await fetchImpl(botApiUrl(env, 'getMe'), { method: 'GET' });
-    if (!response.ok) return false;
-    const payload = await response.json();
-    return payload?.ok === true;
+    if (response.ok) return { status: 'reachable', reason: 'ok' };
+    return { status: 'unreachable', reason: telegramFailureKind(response.status) };
   } catch (_) {
-    // A failed probe is only an enum-valued diagnostic outcome. Never log an
-    // exception here because it can include a Bot API URL containing the token.
-    return false;
+    return { status: 'unreachable', reason: 'network_error' };
   }
+}
+
+export async function probeTelegramApi(env, options = {}) {
+  const result = await probeTelegramApiDetailed(env, options);
+  return result.status === 'reachable';
 }
 
 export function getUploadTarget(file) {
