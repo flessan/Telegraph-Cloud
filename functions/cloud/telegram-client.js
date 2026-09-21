@@ -9,8 +9,6 @@ export const MAX_TELEGRAM_RETRY_DELAY_MS = 60 * 1000;
 const SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo', 'sendDocument']);
 const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
 const RETRYABLE_STATUS = new Set([408, 429]);
-const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
-const RETRYABLE_STATUS = new Set([408, 429]);
 const DOWNLOAD_FORWARD_HEADERS = [
   'Accept',
   'If-Modified-Since',
@@ -59,36 +57,6 @@ function retryAfterMilliseconds(response, responseData, retryCount, randomImpl =
   if (Number.isFinite(telegramRetryAfter) && telegramRetryAfter >= 0) {
     candidates.push(Number(telegramRetryAfter) * 1000);
   }
-  const explicit = candidates.find((value) => Number.isFinite(value) && value >= 0);
-  const exponential = Math.min(1000 * (2 ** retryCount), 10 * 1000);
-  const jitter = Math.floor(Math.max(0, Math.min(1, Number(randomImpl()) || 0)) * 500);
-  const delay = explicit === undefined ? exponential + jitter : explicit;
-  return Math.max(250, Math.min(MAX_TELEGRAM_RETRY_DELAY_MS, Math.round(delay)));
-}
-
-function isRetryableStatus(status) {
-  return RETRYABLE_STATUS.has(status) || (status >= 500 && status <= 599);
-}
-
-function retryAfterMilliseconds(response, responseData, retryCount, randomImpl = Math.random) {
-  const candidates = [];
-
-  const header = response?.headers?.get?.('Retry-After');
-  if (header) {
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      candidates.push(seconds * 1000);
-    } else {
-      const retryDate = Date.parse(header);
-      if (Number.isFinite(retryDate)) candidates.push(retryDate - Date.now());
-    }
-  }
-
-  const telegramRetryAfter = responseData?.parameters?.retry_after;
-  if (Number.isFinite(telegramRetryAfter) && telegramRetryAfter >= 0) {
-    candidates.push(Number(telegramRetryAfter) * 1000);
-  }
-
   const explicit = candidates.find((value) => Number.isFinite(value) && value >= 0);
   const exponential = Math.min(1000 * (2 ** retryCount), 10 * 1000);
   const jitter = Math.floor(Math.max(0, Math.min(1, Number(randomImpl()) || 0)) * 500);
