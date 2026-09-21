@@ -23,7 +23,7 @@ function safeUploadFailure(error) {
     const match = /^Telegram (?:sendPhoto|sendAudio|sendVideo|sendDocument) failed: (\d{3})\b/.exec(message);
     if (match) {
         const status = Number(match[1]);
-        const kind = /\\[([a-z_]+)\\]/.exec(message)?.[1] || '';
+        const kind = /\[([a-z_]+)\]/.exec(message)?.[1] || '';
         if (status === 401 || kind === 'auth_failed') return { code: 'telegram_auth_failed', status: 502 };
         if (status === 403 || kind === 'forbidden') return { code: 'telegram_forbidden', status: 502 };
         if (status === 404 || kind === 'not_found') return { code: 'telegram_not_found', status: 502 };
