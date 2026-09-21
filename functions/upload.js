@@ -5,22 +5,52 @@ import { createDefaultMetadata, putMetadata } from "./utils/metadata.js";
 import { allocateShortId, isShortUrlsEnabled, putShortLink } from "./utils/shortlink.js";
 import { getUploadProvider } from "./storage/index.js";
 
-function safeUploadError(error) {
+function safeUploadFailure(error) {
     const message = typeof error?.message === 'string' ? error.message : '';
-    // Preserve the established, locally generated validation/configuration
-    // messages. They name no value, identifier, or upstream response.
-    if (message === 'No file uploaded'
-        || message === 'Missing required environment variable: TG_Bot_Token'
-        || message === 'Missing required environment variable: TG_Chat_ID'
-        || message === 'Missing required R2 bucket binding: img_r2') {
-        return message;
+
+    if (message === 'No file uploaded') {
+        return { code: 'no_file', status: 400 };
     }
-    if (message.startsWith('Parsing a Body as FormData')) return 'invalid_upload_request';
-    // Telegram/KV/provider errors can include remote details or caller data.
-    // The legacy public surface must not turn them into a diagnostic/secret
-    // oracle; configuration state remains available as safe enums via
-    // /api/config and the dashboard.
-    return 'upload_failed';
+
+    if (message === 'Missing required environment variable: TG_Bot_Token'
+        || message === 'Missing required environment variable: TG_Chat_ID') {
+        return { code: 'telegram_not_configured', status: 503 };
+    }
+
+    if (message === 'Missing required R2 bucket binding: img_r2') {
+        return { code: 'r2_not_configured', status: 503 };
+    }
+
+    if (message.startsWith('Parsing a Body as FormData')) {
+        return { code: 'invalid_upload_request', status: 400 };
+    }
+
+    const telegramFailure = message.match(/^Telegram\s+\S+\s+failed:\s+(\d{3})(?:\s|$)/i);
+    if (telegramFailure) {
+        const status = Number(telegramFailure[1]);
+
+        if (status === 401) return { code: 'telegram_auth_failed', status: 502 };
+        if (status === 403) return { code: 'telegram_forbidden', status: 502 };
+        if (status === 404) return { code: 'telegram_not_found', status: 502 };
+        if (status === 413) return { code: 'file_too_large_for_provider', status: 413 };
+        if (status === 429) return { code: 'telegram_rate_limited', status: 429 };
+        if (status >= 500 && status <= 599) {
+            return { code: 'telegram_upstream_unavailable', status: 503 };
+        }
+        if (status >= 400 && status <= 499) {
+            return { code: 'telegram_api_rejected', status: 502 };
+        }
+    }
+
+    if (message === 'Network error occurred') {
+        return { code: 'telegram_network_error', status: 503 };
+    }
+
+    if (message === 'Failed to get file ID') {
+        return { code: 'telegram_invalid_response', status: 502 };
+    }
+
+    return { code: 'upload_failed', status: 500 };
 }
 
 export async function onRequestPost(context) {
@@ -75,8 +105,9 @@ export async function onRequestPost(context) {
         // Never pass a caught Error to logs or the response. Fetch/provider
         // errors can include a Bot API URL, upstream body, or caller metadata.
         console.error('Upload request failed.');
-        return jsonResponse({ error: safeUploadError(error) }, {
-            status: 500,
+        const failure = safeUploadFailure(error);
+        return jsonResponse({ error: failure.code }, {
+            status: failure.status,
             headers: { 'Cache-Control': 'no-store' },
         });
     }
