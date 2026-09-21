@@ -55,3 +55,86 @@ describe('shared Telegram client boundary', function () {
     }
   });
 });
+
+
+describe('Telegram upload resilience', function () {
+  it('retries transient Telegram responses and honors Retry-After', async function () {
+    const { createTelegramClient } = await import('../functions/cloud/telegram-client.js');
+    const delays = [];
+    let calls = 0;
+    const client = createTelegramClient(
+      { TG_Bot_Token: 'bot-token' },
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls < 3) {
+            return Response.json(
+              { ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 2 } },
+              { status: 429, headers: { 'Retry-After': '2' } },
+            );
+          }
+          return Response.json({ ok: true, result: { document: { file_id: 'doc-id' } } });
+        },
+        sleepImpl: async (ms) => delays.push(ms),
+        randomImpl: () => 0,
+      },
+    );
+    const form = new FormData();
+    form.append('chat_id', '-100');
+    form.append('document', new File(['hello'], 'a.txt', { type: 'text/plain' }));
+    const result = await client.sendFormData(form, 'sendDocument');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(calls, 3);
+    assert.deepStrictEqual(delays, [2000, 2000]);
+  });
+
+  it('retries network failures with bounded exponential backoff', async function () {
+    const { createTelegramClient } = await import('../functions/cloud/telegram-client.js');
+    const delays = [];
+    let calls = 0;
+    const client = createTelegramClient(
+      { TG_Bot_Token: 'bot-token' },
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          throw new Error('network');
+        },
+        sleepImpl: async (ms) => delays.push(ms),
+        randomImpl: () => 0,
+      },
+    );
+    const form = new FormData();
+    form.append('chat_id', '-100');
+    form.append('document', new File(['hello'], 'a.txt', { type: 'text/plain' }));
+    const result = await client.sendFormData(form, 'sendDocument');
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, 'Network error occurred');
+    assert.strictEqual(calls, 4);
+    assert.deepStrictEqual(delays, [1000, 2000, 4000]);
+  });
+
+  it('falls back media validation failures to sendDocument without duplicating retryable failures', async function () {
+    const { createTelegramClient } = await import('../functions/cloud/telegram-client.js');
+    const endpoints = [];
+    const client = createTelegramClient(
+      { TG_Bot_Token: 'bot-token' },
+      {
+        fetchImpl: async (input) => {
+          const endpoint = String(input).split('/').pop();
+          endpoints.push(endpoint);
+          if (endpoint === 'sendPhoto') {
+            return Response.json({ ok: false, error_code: 400, description: 'media rejected' }, { status: 400 });
+          }
+          return Response.json({ ok: true, result: { document: { file_id: 'doc-id' } } });
+        },
+        sleepImpl: async () => {},
+      },
+    );
+    const form = new FormData();
+    form.append('chat_id', '-100');
+    form.append('photo', new File(['hello'], 'a.png', { type: 'image/png' }));
+    const result = await client.sendFormData(form, 'sendPhoto');
+    assert.strictEqual(result.success, true);
+    assert.deepStrictEqual(endpoints, ['sendPhoto', 'sendDocument']);
+  });
+});
