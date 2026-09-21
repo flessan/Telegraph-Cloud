@@ -127,3 +127,91 @@ describe('public collection JSON publishing', function () {
     assert.strictEqual(optionsResponse.headers.get('Access-Control-Allow-Origin'), '*');
   });
 });
+
+describe('developer API public collection share management', function () {
+  let route;
+
+  before(async function () {
+    route = await import('../functions/api/db/[collection]/share.js');
+  });
+
+  function context(overrides = {}) {
+    const share = {
+      project_id: 'prj_aaaaaaaaaaaaaaaaaaaa',
+      collection: 'products',
+      share_id: 'pub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    };
+    const calls = [];
+    const shares = {
+      getStatus: async () => null,
+      publish: async (input) => { calls.push(['publish', input]); return { ...share, url: 'https://api.example/p/pub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.json', raw_url: 'https://api.example/p/pub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.json?raw=1' }; },
+      revoke: async (input) => { calls.push(['revoke', input]); return { revoked: true, share_id: share.share_id }; },
+    };
+    const projectRegistry = { requireActiveProject: async (id) => assert.strictEqual(id, share.project_id) };
+    const projectDatabase = { getCollection: async (name) => { assert.strictEqual(name, 'products'); return { name }; } };
+    return {
+      calls,
+      data: {
+        databaseAuthentication: { authentication: 'developer_api_key', project_id: share.project_id, key_id: 'key_test' },
+        publicCollectionShares: shares,
+        projectRegistry,
+        projectDatabase,
+      },
+      request: new Request('https://api.example/api/db/products/share', { method: 'GET' }),
+      params: { collection: 'products' },
+      ...overrides,
+    };
+  }
+
+  it('reads status and publishes through developer project authentication', async function () {
+    const getResponse = await route.onRequest(context());
+    assert.strictEqual(getResponse.status, 200);
+    assert.deepStrictEqual(await getResponse.json(), { published: false });
+
+    const publishContext = context({
+      request: new Request('https://api.example/api/db/products/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+    });
+    const publishResponse = await route.onRequest(publishContext);
+    assert.strictEqual(publishResponse.status, 201);
+    assert.strictEqual(publishContext.calls[0][0], 'publish');
+  });
+
+  it('rejects dashboard-only authentication for share management', async function () {
+    const result = await route.onRequest(context({
+      data: { databaseAuthentication: { authentication: 'dashboard_legacy', user: 'owner' } },
+    }));
+    assert.strictEqual(result.status, 403);
+    assert.deepStrictEqual(await result.json(), { error: 'developer_auth_required' });
+  });
+
+  it('supports revoke and rejects invalid mutation bodies', async function () {
+    const invalid = await route.onRequest(context({
+      request: new Request('https://api.example/api/db/products/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"force":false}',
+      }),
+    }));
+    assert.strictEqual(invalid.status, 400);
+
+    const revokeContext = context({
+      data: {
+        databaseAuthentication: { authentication: 'developer_api_key', project_id: 'prj_aaaaaaaaaaaaaaaaaaaa' },
+        publicCollectionShares: {
+          revoke: async () => ({ revoked: true, share_id: 'pub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
+        },
+        projectRegistry: { requireActiveProject: async () => {} },
+        projectDatabase: { getCollection: async () => ({ name: 'products' }) },
+      },
+      request: new Request('https://api.example/api/db/products/share', { method: 'DELETE' }),
+    });
+    const revoked = await route.onRequest(revokeContext);
+    assert.strictEqual(revoked.status, 200);
+    assert.strictEqual((await revoked.json()).revoked, true);
+  });
+});
+\n
