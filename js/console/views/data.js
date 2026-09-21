@@ -105,7 +105,6 @@ export async function renderData(container, projectId, query) {
           h('td', {}, [
             h('button', { class: 'c-btn text sm', 'aria-label': ct('Open records'), title: ct('Open records'), onClick: (event) => { event.stopPropagation(); selectCollection(collection.name, 'records'); } }, ct('Records')),
             h('button', { class: 'c-btn text sm', 'aria-label': ct('Open schema'), title: ct('Open schema'), onClick: (event) => { event.stopPropagation(); selectCollection(collection.name, 'schema'); } }, ct('Schema')),
-            h('button', { class: 'c-btn text sm', 'aria-label': ct('Publish JSON'), title: ct('Publish JSON'), onClick: (event) => { event.stopPropagation(); publishCollection(collection); } }, ct('Publish JSON')),
             h('button', { class: 'c-btn text sm', 'aria-label': ct('Delete collection'), title: ct('Delete collection'), onClick: (event) => { event.stopPropagation(); deleteCollection(collection.name); } }, ct('Delete')),
           ]),
         ]);
@@ -120,57 +119,6 @@ export async function renderData(container, projectId, query) {
     navigate(hash);
   }
 
-  async function publishCollection(collection) {
-    const endpoint = dbBase(projectId) + '/collections/' + encodeURIComponent(collection.name) + '/share';
-    let status;
-    try { status = await api.get(endpoint); } catch (error) { toast(error.message || error.code, { kind: 'error' }); return; }
-    let published = Boolean(status?.published);
-    let share = published ? status : null;
-    const urlEl = h('code', { style: { display: 'block', wordBreak: 'break-all' } });
-    const rawUrlEl = h('code', { style: { display: 'block', wordBreak: 'break-all' } });
-    const statusEl = h('p', { class: 'c-field-hint' });
-    const bodyEl = h('div', {});
-    const render = () => {
-      clear(bodyEl);
-      if (!published) {
-        bodyEl.append(h('p', {}, ct('Publish this collection as a public, read-only JSON API.')), h('p', { class: 'c-field-hint' }, ct('Anyone with the link can read the published records. No API key is required.')));
-        statusEl.textContent = '';
-        return;
-      }
-      urlEl.textContent = share.url;
-      rawUrlEl.textContent = share.raw_url;
-      statusEl.textContent = ct('This collection is currently public and read-only.');
-      bodyEl.append(
-        h('label', { class: 'c-field' }, [h('span', { class: 'c-field-label' }, ct('Public JSON URL')), h('div', { class: 'c-secret-value' }, [urlEl, copyButton(share.url, { label: '', message: ct('JSON URL copied') })])]),
-        h('label', { class: 'c-field' }, [h('span', { class: 'c-field-label' }, ct('Raw JSON URL')), h('div', { class: 'c-secret-value' }, [rawUrlEl, copyButton(share.raw_url, { label: '', message: ct('Raw JSON URL copied') })])]),
-        h('p', { class: 'c-field-hint' }, ct('The normal URL returns pagination metadata. Add raw=1 for a plain JSON array of records.')),
-      );
-    };
-    render();
-    openDialog({
-      title: ct('Publish JSON · {name}', { name: collection.name }),
-      subtitle: ct('Create a public read-only JSON feed for this collection.'),
-      body: [bodyEl, statusEl],
-      actions: [
-        { label: ct('Close'), variant: 'outlined' },
-        ...(published ? [
-          { label: ct('Regenerate link'), variant: 'outlined', keepOpen: true, onClick: async () => {
-            try { share = await api.post(endpoint, { force: true }); published = true; toast(ct('Public link regenerated'), { kind: 'success' }); render(); return false; }
-            catch (error) { toast(error.message || error.code, { kind: 'error' }); return false; }
-          } },
-          { label: ct('Revoke public link'), variant: 'danger', onClick: async (close) => {
-            try { await api.del(endpoint); published = false; share = null; toast(ct('Public link revoked'), { kind: 'success' }); close(); return true; }
-            catch (error) { toast(error.message || error.code, { kind: 'error' }); return false; }
-          } },
-        ] : [
-          { label: ct('Publish collection'), variant: 'primary', keepOpen: true, onClick: async () => {
-            try { share = await api.post(endpoint, {}); published = true; toast(ct('Collection published'), { kind: 'success' }); render(); return false; }
-            catch (error) { toast(error.message || error.code, { kind: 'error' }); return false; }
-          } },
-        ]),
-      ],
-    });
-  }
   async function deleteCollection(name) {
     const ok = await confirmDialog({
       title: ct('Delete collection?'),
