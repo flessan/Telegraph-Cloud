@@ -97,6 +97,7 @@ describe('Phase 6C public health and authenticated operator readiness', function
         cloud_kv: 'readable',
         telegram_configuration: 'configured',
         telegram_api: 'not_probed',
+        telegram_api_reason: 'not_probed',
         api_key_verifier: 'configured',
         s3_credential_verifier: 'configured',
         s3_endpoint: 'configured',
@@ -141,6 +142,7 @@ describe('Phase 6C public health and authenticated operator readiness', function
     assert.strictEqual(fetchMock.calls.length, 1);
     assert.strictEqual(report.status, 'ready_for_smoke');
     assert.strictEqual(report.checks.telegram_api, 'reachable');
+    assert.strictEqual(report.checks.telegram_api_reason, 'ok');
     const serialized = JSON.stringify(report);
     assert.ok(!serialized.includes(secrets.botToken), serialized);
     assert.ok(!serialized.includes('998877'), serialized);
@@ -157,6 +159,7 @@ describe('Phase 6C public health and authenticated operator readiness', function
     const report = await readiness.getOperatorReadiness(env, { probeTelegram: true });
     assert.strictEqual(report.status, 'degraded');
     assert.strictEqual(report.checks.telegram_api, 'unreachable');
+    assert.strictEqual(report.checks.telegram_api_reason, 'forbidden');
     const serialized = JSON.stringify(report);
     assert.ok(!serialized.includes(secrets.botToken), serialized);
     assert.ok(!serialized.includes(secrets.chatId), serialized);
