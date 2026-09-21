@@ -437,7 +437,7 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.deepStrictEqual(ctx.errors, []);
 
     // The four onboarding sections exist.
-    for (const id of ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk']) {
+    for (const id of ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk', 'connect-agents']) {
       assert.ok(ctx.doc.getElementById(id), `section ${id} present`);
     }
 
@@ -480,6 +480,72 @@ describe('Cloud console (real page + modules, scripted API)', function () {
       assert.ok(!values.includes('tg_live'), 'no secret in web storage');
     }
     assert.ok(!ctx.win.location.href.includes('tg_live'), 'no secret in the URL');
+  });
+
+  it('AI Agent section: agent prompts are project-specific, mandated, and secret-free', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/connect`);
+
+    // Issue a key first: even with a secret in page memory, the generated
+    // agent prompt must never contain it.
+    click(ctx.all('button').find((b) => b.textContent.trim() === 'Issue API key'));
+    await tick(20);
+    click(Array.from(ctx.doc.querySelector('.c-dialog').querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'Create & reveal'));
+    await tick(40);
+    click(Array.from(ctx.doc.querySelectorAll('.c-dialog button'))
+      .find((b) => /I saved the secret/.test(b.textContent)));
+    await tick(40);
+
+    // Five supported agents.
+    const tabs = ctx.all('#connect-agents [data-agent]');
+    assert.deepStrictEqual(tabs.map((t) => t.dataset.agent),
+      ['generic', 'claude-code', 'cursor', 'codex', 'gemini-cli']);
+
+    const promptText = () => Array.from(ctx.doc.querySelectorAll('#connect-agents pre'))
+      .map((pre) => pre.textContent).join('\n');
+    let prompt = promptText();
+    const origin = ctx.win.location.origin;
+
+    // Project-specific facts.
+    assert.ok(prompt.includes(`Telegraph Cloud URL: ${origin}`), 'deployment URL');
+    assert.ok(prompt.includes(`Project ID: ${PROJECT.project_id}`), 'project id');
+    assert.ok(prompt.includes(`${origin}/openapi.json`), 'OpenAPI URL');
+    assert.ok(prompt.includes(`${origin}/docs/ai`), 'documentation URL');
+    for (const name of ['TELEGRAPH_URL', 'TELEGRAPH_PROJECT', 'TELEGRAPH_API_KEY']) {
+      assert.ok(prompt.includes(name), `env var name: ${name}`);
+    }
+    assert.ok(prompt.includes('Authorization: Bearer $TELEGRAPH_API_KEY'), 'auth instructions');
+    assert.ok(prompt.includes('/api/db/{collection}'), 'capabilities: document CRUD');
+    assert.ok(prompt.includes('ListObjectsV2'), 'capabilities: S3 endpoint');
+
+    // The six mandated behaviors.
+    assert.ok(/1\. Read the documentation first/.test(prompt), 'mandate: docs first');
+    assert.ok(/2\. Inspect the existing repository/.test(prompt), 'mandate: inspect repo');
+    assert.ok(/3\. Reuse the existing integration/.test(prompt), 'mandate: reuse integration');
+    assert.ok(/4\. Do not create another database/.test(prompt), 'mandate: no second database');
+    assert.ok(/5\. Do not introduce PostgreSQL, Prisma, or Drizzle/.test(prompt), 'mandate: no SQL stack');
+    assert.ok(/6\. Never commit secrets/.test(prompt), 'mandate: never commit secrets');
+
+    // Never a secret value — before and after issuing.
+    assert.ok(!prompt.includes('tg_live_'), 'no secret material in the prompt');
+    assert.ok(!prompt.includes('tg_live_key_secret_once_only_value_0123456789'), 'no issued secret');
+
+    // Claude Code flavor prefixes the agent identity and its notes file.
+    click(tabs.find((t) => t.dataset.agent === 'claude-code'));
+    await tick(10);
+    prompt = promptText();
+    assert.ok(prompt.includes('You are Claude Code') && prompt.includes('CLAUDE.md'), 'flavor preamble');
+
+    // "Paste this prompt" copies the exact prompt (never a secret).
+    click(Array.from(ctx.doc.querySelectorAll('#connect-agents button'))
+      .find((b) => b.textContent.trim() === 'Paste this prompt'));
+    await tick(20);
+    const copied = String(ctx.copied());
+    assert.ok(copied.includes(`Project ID: ${PROJECT.project_id}`), 'clipboard carries the prompt');
+    assert.ok(copied.includes('Never commit secrets'), 'clipboard carries the mandates');
+    assert.ok(!copied.includes('tg_live_'), 'clipboard never carries the secret');
+    assert.ok(/Prompt copied — paste it into/.test(ctx.doc.getElementById('c-live').textContent), 'confirming toast');
   });
 
   it('creates records only inside the open collection (no implicit collections)', async function () {

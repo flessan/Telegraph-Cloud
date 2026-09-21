@@ -43,6 +43,22 @@ Per-project sections (project id comes from the verified session/URL scope):
 
 ### Connect — developer onboarding center
 
+### Connect — developer onboarding center
+
+The **AI Agent** subsection generates one project-specific prompt per
+supported coding agent (Generic AI Agent, Claude Code, Cursor, Codex,
+Gemini CLI) behind a **"Paste this prompt"** button. The prompt carries:
+the deployment URL, the project ID, the OpenAPI URL, the documentation URLs,
+the environment variable *names* (never values), Bearer authentication
+instructions, and the available capabilities (generic document CRUD with
+versions and preconditions, object storage, the S3-compatible endpoint).
+It also mandates agent behavior: read the documentation first, inspect the
+existing repository, reuse the existing integration, do not create another
+database, do not introduce PostgreSQL/Prisma/Drizzle, and never commit
+secrets. Agent flavors add only their durable-notes convention (CLAUDE.md,
+.cursor/rules, AGENTS.md, GEMINI.md). The prompt is generated from the URL
+and project ID alone — it can never contain a secret value.
+
 The Connect section is a single onboarding page with four sections:
 
 - **Quick Start** — three steps (issue credentials → copy `.env` → first

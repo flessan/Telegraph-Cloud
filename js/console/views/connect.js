@@ -5,7 +5,7 @@
 // TELEGRAPH_PROJECT, TELEGRAPH_API_KEY). Issued secrets live in this page's
 // memory only — never localStorage, never a URL — and snippets reference the
 // environment variable instead of embedding the secret.
-import { h } from '../util.js';
+import { h, clear, copyText } from '../util.js';
 import { api } from '../api.js';
 import { pageHead, openDialog, toast } from '../ui.js';
 import { ct } from '../i18n.js';
@@ -33,6 +33,7 @@ export async function renderConnect(container, projectId) {
     ['connect-environment', ct('Environment')],
     ['connect-api', ct('API')],
     ['connect-sdk', ct('SDK / cURL')],
+    ['connect-agents', ct('AI Agent')],
   ];
   container.append(h('div', { class: 'c-subtabs', role: 'navigation', style: { marginBottom: '14px' } },
     sections.map(([id, label]) => h('button', {
@@ -328,6 +329,116 @@ export async function renderConnect(container, projectId) {
   sdk.append(h('div', { style: { height: '12px' } }));
   sdk.append(jsBlock);
 
+  // -------------------------------------------------------------- AI Agent
+  // One project-specific prompt per supported coding agent. The prompt
+  // contains facts and instructions only — never a secret value.
+  const AGENTS = [
+    { key: 'generic', label: () => ct('Generic AI Agent'), file: null,
+      note: () => ct('Works with any coding agent that can fetch a URL and edit files.') },
+    { key: 'claude-code', label: () => ct('Claude Code'), file: 'CLAUDE.md',
+      note: () => ct('Optimized for Claude Code. Durable integration notes go in CLAUDE.md (no secrets).') },
+    { key: 'cursor', label: () => ct('Cursor'), file: '.cursor/rules',
+      note: () => ct('Optimized for the Cursor agent. Durable rules go in .cursor/rules (no secrets).') },
+    { key: 'codex', label: () => ct('Codex'), file: 'AGENTS.md',
+      note: () => ct('Optimized for Codex. Durable guidance goes in AGENTS.md (no secrets).') },
+    { key: 'gemini-cli', label: () => ct('Gemini CLI'), file: 'GEMINI.md',
+      note: () => ct('Optimized for Gemini CLI. Durable context goes in GEMINI.md (no secrets).') },
+  ];
+  let selectedAgent = AGENTS[0];
+
+  function agentPromptCore() {
+    return [
+      'PROJECT FACTS',
+      `- Telegraph Cloud URL: ${origin}`,
+      `- Project ID: ${projectId}`,
+      `- OpenAPI URL: ${origin}/openapi.json`,
+      `- Documentation URL: ${origin}/docs/ai (also ${origin}/llms.txt and ${origin}/llms-full.txt)`,
+      '- Environment variable names (values live only in your local .env):',
+      `    TELEGRAPH_URL=${origin}`,
+      `    TELEGRAPH_PROJECT=${projectId}`,
+      '    TELEGRAPH_API_KEY=<create in the console: Project > API > API Keys; shown exactly once>',
+      `    S3_ENDPOINT=${origin}/s3  S3_REGION=us-east-1  S3_ACCESS_KEY_ID=…  S3_SECRET_ACCESS_KEY=…`,
+      '',
+      'AUTHENTICATION',
+      '- Every document/object request sends the header `Authorization: Bearer $TELEGRAPH_API_KEY`.',
+      '- The key is created in the console (Project > API > API Keys) with scopes db:read, db:write, storage:read, storage:write, and is shown exactly once. Store it in your local .env (gitignored); read it from the environment at runtime.',
+      '- S3-compatible access uses separate SigV4 credentials (tgsk_live_…) from the same console section.',
+      '',
+      'AVAILABLE CAPABILITIES (all documented in the OpenAPI URL above)',
+      `- Document database (generic CRUD routes for every collection): GET/POST ${origin}/api/db/{collection} and GET/PATCH/DELETE ${origin}/api/db/{collection}/{id}; versioned records, optimistic concurrency via _expected_version, Idempotency-Key retries, exact-match filters, cursor pagination, optional per-collection schemas.`,
+      `- Object storage: PUT/GET/HEAD/DELETE ${origin}/api/storage/{bucket}/{key} and GET ${origin}/api/storage/{bucket}.`,
+      `- S3-compatible endpoint: GetObject/HeadObject/PutObject/DeleteObject/ListObjectsV2 at ${origin}/s3 (path-style, region us-east-1).`,
+      '- Not available (do not attempt): SQL, psql, multipart uploads, presigned URLs.',
+      '',
+      'RULES — FOLLOW EXACTLY',
+      `1. Read the documentation first: fetch ${origin}/llms.txt and ${origin}/openapi.json before writing any code.`,
+      '2. Inspect the existing repository before adding anything: search for an existing client, helper, or integration that already uses these environment variables.',
+      '3. Reuse the existing integration and extend it; do not fork or duplicate it.',
+      '4. Do not create another database. Telegraph Cloud is the data layer for this project.',
+      '5. Do not introduce PostgreSQL, Prisma, or Drizzle — or any SQL database or ORM. The document API is not SQL.',
+      '6. Never commit secrets. The API key lives only in the local .env (gitignored) and is read from the environment at runtime — never hard-coded in source, tests, docs, or prompts.',
+    ].join('\n');
+  }
+
+  function agentPrompt(agent) {
+    const core = agentPromptCore();
+    if (!agent.file) return core;
+    return [
+      `You are ${agent.label()} working in this repository.`,
+      '',
+      `Persist durable integration notes in ${agent.file} (facts only — never secrets), then:`,
+      '',
+      core,
+    ].join('\n');
+  }
+
+  const agentsSection = section('connect-agents', ct('AI Agent'), ct('Paste one prompt into your coding agent; it reads the docs and wires the integration.'));
+
+  const agentTabs = h('div', { class: 'c-subtabs', role: 'tablist', style: { marginBottom: '8px' } });
+  const agentNote = h('p', { style: { margin: '0 0 10px', color: 'var(--c-text-2)', fontSize: '13px' } });
+  const promptWrap = h('div', {});
+
+  function renderAgentPanel() {
+    for (const tab of agentTabs.querySelectorAll('button')) {
+      const active = tab.dataset.agent === selectedAgent.key;
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-selected', String(active));
+    }
+    agentNote.textContent = selectedAgent.note();
+    clear(promptWrap);
+    const prompt = agentPrompt(selectedAgent);
+    promptWrap.append(codeBlock(prompt, {}));
+    promptWrap.append(h('div', { style: { marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, [
+      h('button', {
+        class: 'c-btn primary',
+        onClick: async () => {
+          const ok = await copyText(prompt);
+          toast(ok
+            ? ct('Prompt copied — paste it into {agent}', { agent: selectedAgent.label() })
+            : ct('Copy failed — select and copy manually'), { kind: ok ? 'success' : 'error' });
+        },
+      }, ct('Paste this prompt')),
+      h('span', { style: { color: 'var(--c-text-2)', fontSize: '12.5px' } }, ct('The prompt carries facts and instructions only — never a secret value.')),
+    ]));
+  }
+
+  for (const agent of AGENTS) {
+    agentTabs.append(h('button', {
+      type: 'button',
+      class: 'c-subtab',
+      role: 'tab',
+      'data-agent': agent.key,
+      onClick: () => { selectedAgent = agent; renderAgentPanel(); },
+    }, agent.label()));
+  }
+
+  agentsSection.append(h('div', { class: 'c-card', style: { padding: '16px 18px' } }, [
+    agentTabs,
+    agentNote,
+    promptWrap,
+  ]));
+  renderAgentPanel();
+
   // --------------------------------------------- credential creation (kept)
   function issueApiKey() {
     openIssueDialog({
@@ -411,4 +522,4 @@ export async function renderConnect(container, projectId) {
 }
 
 // The four section ids are stable anchors used by the jump nav above.
-export const CONNECT_SECTIONS = ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk'];
+export const CONNECT_SECTIONS = ['connect-quickstart', 'connect-environment', 'connect-api', 'connect-sdk', 'connect-agents'];
