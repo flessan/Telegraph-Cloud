@@ -27,7 +27,12 @@ function hasBotToken(env) {
 }
 
 function botApiUrl(env, endpoint) {
-  return `${TELEGRAM_API_ORIGIN}/bot${env.TG_Bot_Token}/${endpoint}`;
+  const token = String(env.TG_Bot_Token).trim();
+  return `${TELEGRAM_API_ORIGIN}/bot${token}/${endpoint}`;
+}
+
+function telegramChatId(env) {
+  return String(env.TG_Chat_ID ?? '').trim();
 }
 
 function isSafeTelegramFilePath(filePath) {
@@ -84,10 +89,10 @@ function telegramFailureKind(status, responseData = null) {
     : '';
 
   if (status === 400) {
-    if (/chat not found|chat_id.*not found|peer.*not found/.test(description)) {
+    if (/chat not found|chat_id.*(?:not found|invalid)|peer.*(?:not found|invalid)|chat_id is empty|bad peer|peer_id_invalid|chat_id_invalid/.test(description)) {
       return 'chat_not_found';
     }
-    if (/bot .*not (?:a )?member|bot was kicked|not enough rights|have no rights to send|administrator rights/.test(description)) {
+    if (/bot .*not (?:a )?member|bot was kicked|not enough rights|have no rights to send|administrator rights|can't write in this chat|cannot send messages|not enough rights to send messages/.test(description)) {
       return 'forbidden';
     }
     if (/file is too big|request entity too large/.test(description)) {
@@ -129,12 +134,26 @@ export async function probeTelegramApiDetailed(env, { fetchImpl = globalThis.fet
   try {
     validateTelegramConfig(env);
     if (typeof fetchImpl !== 'function') return { status: 'unreachable', reason: 'network_error' };
+
     const response = await fetchImpl(botApiUrl(env, 'getMe'), { method: 'GET' });
-    if (response.ok) return { status: 'reachable', reason: 'ok' };
-    const payload = await parseTelegramResponse(response);
+    if (!response.ok) {
+      const payload = await parseTelegramResponse(response);
+      return {
+        status: 'unreachable',
+        reason: telegramFailureKind(response.status, payload),
+      };
+    }
+
+    const chatResponse = await fetchImpl(
+      botApiUrl(env, 'getChat') + `?chat_id=${encodeURIComponent(telegramChatId(env))}`,
+      { method: 'GET' },
+    );
+    if (chatResponse.ok) return { status: 'reachable', reason: 'ok' };
+
+    const chatPayload = await parseTelegramResponse(chatResponse);
     return {
       status: 'unreachable',
-      reason: telegramFailureKind(response.status, payload),
+      reason: telegramFailureKind(chatResponse.status, chatPayload),
     };
   } catch (_) {
     return { status: 'unreachable', reason: 'network_error' };
@@ -165,7 +184,7 @@ export function getUploadTarget(file) {
 
 export function createTelegramFormData(chatId, field, file) {
   const formData = new FormData();
-  formData.append('chat_id', chatId);
+  formData.append('chat_id', String(chatId).trim());
   formData.append(field, file);
   return formData;
 }

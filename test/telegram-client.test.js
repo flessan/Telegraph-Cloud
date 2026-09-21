@@ -159,3 +159,11 @@ describe('Telegram failure classification', function () {
     assert.strictEqual(reason, 'forbidden');
   });
 });
+
+describe('Telegram transport configuration', function () {
+  it('trims Telegram chat identifiers before sending', async function () {
+    const { createTelegramFormData } = await import('../functions/cloud/telegram-client.js');
+    const form = createTelegramFormData('  -100123  ', 'document', new File(['hello'], 'a.txt', { type: 'text/plain' }));
+    assert.strictEqual(form.get('chat_id'), '-100123');
+  });
+});

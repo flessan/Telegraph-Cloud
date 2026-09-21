@@ -133,9 +133,17 @@ describe('Phase 6C public health and authenticated operator readiness', function
   it('uses an opt-in, no-detail Telegram getMe probe and does not retain the returned Telegram record', async function () {
     const env = configuredEnv();
     fetchMock = installFetchMock(async (input, init) => {
-      assert.strictEqual(String(input), `https://api.telegram.org/bot${secrets.botToken}/getMe`);
+      if (String(input).endsWith('/getMe')) {
+        assert.strictEqual(String(input), `https://api.telegram.org/bot${secrets.botToken}/getMe`);
+        assert.deepStrictEqual(init, { method: 'GET' });
+        return Response.json({ ok: true, result: { id: 998877, username: 'must-not-appear' } });
+      }
+      assert.strictEqual(
+        String(input),
+        `https://api.telegram.org/bot${secrets.botToken}/getChat?chat_id=${encodeURIComponent(secrets.chatId)}`,
+      );
       assert.deepStrictEqual(init, { method: 'GET' });
-      return Response.json({ ok: true, result: { id: 998877, username: 'must-not-appear' } });
+      return Response.json({ ok: true, result: { id: secrets.chatId } });
     });
 
     const report = await readiness.getOperatorReadiness(env, { probeTelegram: true });
