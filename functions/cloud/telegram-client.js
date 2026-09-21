@@ -64,6 +64,30 @@ function retryAfterMilliseconds(response, responseData, retryCount, randomImpl =
   return Math.max(250, Math.min(MAX_TELEGRAM_RETRY_DELAY_MS, Math.round(delay)));
 }
 
+function retryableNetworkDelay(retryCount, randomImpl = Math.random) {
+  return Math.max(250, Math.min(
+    MAX_TELEGRAM_RETRY_DELAY_MS,
+    Math.round(Math.min(1000 * (2 ** retryCount), 10 * 1000)
+      + Math.floor(Math.max(0, Math.min(1, Number(randomImpl()) || 0)) * 500)),
+  ));
+}
+
+function telegramFailureKind(status) {
+  if (status === 401) return 'auth_failed';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 413) return 'payload_too_large';
+  if (status === 429) return 'rate_limited';
+  if (Number.isInteger(status) && status >= 500 && status <= 599) return 'upstream_unavailable';
+  if (Number.isInteger(status) && status >= 400 && status <= 499) return 'api_rejected';
+  return 'network_error';
+}
+
+export async function classifyTelegramApiFailure(response) {
+  const status = Number(response?.status);
+  return telegramFailureKind(Number.isFinite(status) ? status : null);
+}
+
 export function validateTelegramConfig(env) {
   if (!env || isEmptyBinding(env.TG_Bot_Token)) {
     throw new Error('Missing required environment variable: TG_Bot_Token');
@@ -81,19 +105,21 @@ export function validateTelegramConfig(env) {
  * prove channel permissions/write readiness. There is no retry here: a probe
  * must not turn one operator click into a Telegram request burst.
  */
-export async function probeTelegramApi(env, { fetchImpl = globalThis.fetch } = {}) {
+export async function probeTelegramApiDetailed(env, { fetchImpl = globalThis.fetch } = {}) {
   try {
     validateTelegramConfig(env);
-    if (typeof fetchImpl !== 'function') return false;
+    if (typeof fetchImpl !== 'function') return { status: 'unreachable', reason: 'network_error' };
     const response = await fetchImpl(botApiUrl(env, 'getMe'), { method: 'GET' });
-    if (!response.ok) return false;
-    const payload = await response.json();
-    return payload?.ok === true;
+    if (response.ok) return { status: 'reachable', reason: 'ok' };
+    return { status: 'unreachable', reason: telegramFailureKind(response.status) };
   } catch (_) {
-    // A failed probe is only an enum-valued diagnostic outcome. Never log an
-    // exception here because it can include a Bot API URL containing the token.
-    return false;
+    return { status: 'unreachable', reason: 'network_error' };
   }
+}
+
+export async function probeTelegramApi(env, options = {}) {
+  const result = await probeTelegramApiDetailed(env, options);
+  return result.status === 'reachable';
 }
 
 export function getUploadTarget(file) {
@@ -249,32 +275,58 @@ export function createTelegramClient(env, {
   async function getFilePath(fileId) {
     if (!hasBotToken(env) || typeof fileId !== 'string' || !fileId) return null;
 
-    try {
-      const url = `${botApiUrl(env, 'getFile')}?file_id=${encodeURIComponent(fileId)}`;
-      const response = await fetchImpl(url, { method: 'GET' });
-      if (!response.ok) {
+    for (let retryCount = 0; retryCount <= 2; retryCount += 1) {
+      try {
+        const url = `${botApiUrl(env, 'getFile')}?file_id=${encodeURIComponent(fileId)}`;
+        const response = await fetchImpl(url, { method: 'GET' });
+        if (response.ok) {
+          const data = await response.json();
+          const filePath = data?.ok && typeof data?.result?.file_path === 'string'
+            ? data.result.file_path
+            : null;
+          if (!isSafeTelegramFilePath(filePath)) {
+            console.error('Telegram getFile response did not include a safe file path.');
+            return null;
+          }
+          return filePath;
+        }
+
+        if (isRetryableStatus(response.status) && retryCount < 2) {
+          await sleepImpl(retryAfterMilliseconds(response, null, retryCount, randomImpl));
+          continue;
+        }
+        console.error('Telegram getFile request failed.');
+        return null;
+      } catch (_) {
+        if (retryCount < 2) {
+          await sleepImpl(retryableNetworkDelay(retryCount, randomImpl));
+          continue;
+        }
         console.error('Telegram getFile request failed.');
         return null;
       }
-
-      const data = await response.json();
-      const filePath = data?.ok && typeof data?.result?.file_path === 'string'
-        ? data.result.file_path
-        : null;
-      if (!isSafeTelegramFilePath(filePath)) {
-        console.error('Telegram getFile response did not include a safe file path.');
-        return null;
-      }
-      return filePath;
-    } catch (_) {
-      console.error('Telegram getFile request failed.');
-      return null;
     }
+    return null;
   }
 
   async function fetchDownload(fileUrl, request) {
-    return fetchImpl(fileUrl, createTelegramDownloadRequestInit(request));
+    for (let retryCount = 0; retryCount <= 2; retryCount += 1) {
+      try {
+        const response = await fetchImpl(fileUrl, createTelegramDownloadRequestInit(request));
+        if (!isRetryableStatus(response.status) || retryCount >= 2) {
+          return response;
+        }
+        await sleepImpl(retryAfterMilliseconds(response, null, retryCount, randomImpl));
+      } catch (error) {
+        if (retryCount >= 2) {
+          throw error;
+        }
+        await sleepImpl(retryableNetworkDelay(retryCount, randomImpl));
+      }
+    }
+    throw new Error('Telegram download failed');
   }
+
 
   return Object.freeze({
     validateConfig: () => validateTelegramConfig(env),

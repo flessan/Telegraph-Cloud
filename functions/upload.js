@@ -7,49 +7,35 @@ import { getUploadProvider } from "./storage/index.js";
 
 function safeUploadFailure(error) {
     const message = typeof error?.message === 'string' ? error.message : '';
-
-    if (message === 'No file uploaded') {
-        return { code: 'no_file', status: 400 };
-    }
-
+    if (message === 'No file uploaded') return { code: 'no_file', status: 400 };
     if (message === 'Missing required environment variable: TG_Bot_Token'
         || message === 'Missing required environment variable: TG_Chat_ID') {
         return { code: 'telegram_not_configured', status: 503 };
     }
-
     if (message === 'Missing required R2 bucket binding: img_r2') {
         return { code: 'r2_not_configured', status: 503 };
     }
+    if (message.startsWith('Parsing a Body as FormData')) return { code: 'invalid_upload_request', status: 400 };
 
-    if (message.startsWith('Parsing a Body as FormData')) {
-        return { code: 'invalid_upload_request', status: 400 };
-    }
-
-    const telegramFailure = message.match(/^Telegram\s+\S+\s+failed:\s+(\d{3})(?:\s|$)/i);
-    if (telegramFailure) {
-        const status = Number(telegramFailure[1]);
-
+    // The Telegram client intentionally returns a safe, prefix-only error
+    // string. Classify its HTTP/network failure without reflecting the raw
+    // provider description or URL.
+    const match = /^Telegram (?:sendPhoto|sendAudio|sendVideo|sendDocument) failed: (\d{3})\b/.exec(message);
+    if (match) {
+        const status = Number(match[1]);
         if (status === 401) return { code: 'telegram_auth_failed', status: 502 };
         if (status === 403) return { code: 'telegram_forbidden', status: 502 };
         if (status === 404) return { code: 'telegram_not_found', status: 502 };
         if (status === 413) return { code: 'file_too_large_for_provider', status: 413 };
         if (status === 429) return { code: 'telegram_rate_limited', status: 429 };
-        if (status >= 500 && status <= 599) {
-            return { code: 'telegram_upstream_unavailable', status: 503 };
-        }
-        if (status >= 400 && status <= 499) {
-            return { code: 'telegram_api_rejected', status: 502 };
-        }
+        if (status >= 500 && status <= 599) return { code: 'telegram_upstream_unavailable', status: 503 };
+        return { code: 'telegram_api_rejected', status: 502 };
     }
+    if (message === 'Network error occurred') return { code: 'telegram_network_error', status: 503 };
+    if (message === 'Failed to get file ID') return { code: 'telegram_invalid_response', status: 502 };
 
-    if (message === 'Network error occurred') {
-        return { code: 'telegram_network_error', status: 503 };
-    }
-
-    if (message === 'Failed to get file ID') {
-        return { code: 'telegram_invalid_response', status: 502 };
-    }
-
+    // KV/provider errors can contain remote details or caller data. Keep the
+    // public error opaque rather than turning it into a diagnostic oracle.
     return { code: 'upload_failed', status: 500 };
 }
 
