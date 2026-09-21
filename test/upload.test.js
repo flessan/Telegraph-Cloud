@@ -284,9 +284,9 @@ describe('upload function', function () {
       },
     }));
 
-    assert.strictEqual(res.status, 500);
+    assert.strictEqual(res.status, 503);
     assert.deepStrictEqual(JSON.parse(await res.text()), {
-      error: 'upload_failed',
+      error: 'telegram_upstream_unavailable',
     });
   });
 
@@ -310,16 +310,49 @@ describe('upload function', function () {
         },
       }));
 
-      assert.strictEqual(res.status, 500);
+      assert.strictEqual(res.status, 503);
       assert.strictEqual(res.headers.get('Cache-Control'), 'no-store');
       const serialized = `${await res.text()} ${JSON.stringify(logged)}`;
       assert.strictEqual(serialized.includes(upstreamDetail), false, serialized);
       assert.strictEqual(serialized.includes(botToken), false, serialized);
       assert.strictEqual(serialized.includes(chatId), false, serialized);
-      assert.ok(serialized.includes('upload_failed'), serialized);
+      assert.ok(serialized.includes('telegram_upstream_unavailable'), serialized);
     } finally {
       console.error = mutedError;
     }
+  });
+
+  it('classifies Telegram authentication failure without exposing the provider response', async function () {
+    const { onRequestPost } = await import('../functions/upload.js');
+    fetchMock = installFetchMock(async input => {
+      assert.strictEqual(String(input), 'https://api.telegram.org/botbot-token/sendDocument');
+      return Response.json({ ok: false, error_code: 401, description: 'Unauthorized: bot token is invalid' }, { status: 401 });
+    });
+
+    const request = await createUploadRequest(new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    const res = await onRequestPost(makeContext({
+      request,
+      env: { disable_telemetry: 'true', TG_Bot_Token: 'bot-token', TG_Chat_ID: '-100123' },
+    }));
+
+    assert.strictEqual(res.status, 502);
+    assert.deepStrictEqual(JSON.parse(await res.text()), { error: 'telegram_auth_failed' });
+  });
+
+  it('classifies exhausted Telegram network failure as temporarily unavailable', async function () {
+    const { onRequestPost } = await import('../functions/upload.js');
+    fetchMock = installFetchMock(async () => {
+      throw new Error('connect ECONNRESET');
+    });
+
+    const request = await createUploadRequest(new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    const res = await onRequestPost(makeContext({
+      request,
+      env: { disable_telemetry: 'true', TG_Bot_Token: 'bot-token', TG_Chat_ID: '-100123' },
+    }));
+
+    assert.strictEqual(res.status, 503);
+    assert.deepStrictEqual(JSON.parse(await res.text()), { error: 'telegram_network_error' });
   });
 
   it('returns a clear value-free configuration error when Telegram environment variables are missing', async function () {
