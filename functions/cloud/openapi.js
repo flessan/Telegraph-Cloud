@@ -21,8 +21,9 @@ const AUDIENCE = 'telegraph-api';
 
 // Developer data-plane routes. method/path/auth/scope mirror the real
 // function files under functions/ (see test/openapi.test.js for the
-// path-to-file accuracy mapping).
-const DATA_PLANE = [
+// path-to-file accuracy mapping). Exported so the developer documentation
+// (llms.txt, /docs) and its accuracy tests derive from the same catalog.
+export const DATA_PLANE = [
   { path: '/api/db/{collection}', methods: ['get', 'post'] },
   { path: '/api/db/{collection}/{recordId}', methods: ['get', 'patch', 'delete'] },
   { path: '/api/storage/{bucket}', methods: ['get'] },

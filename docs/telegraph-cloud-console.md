@@ -87,6 +87,33 @@ cards carry a record-ID field that feeds both "Try it" (which runs against
 the dashboard-session project route, never with a developer key from the
 browser) and the snippets. The Explorer links `/openapi.json` and the
 project-aware OpenAPI document.
+
+## Developer documentation (generated, real routes)
+
+Every documentation link the console shows is a real endpoint:
+
+- `GET /openapi.json` — OpenAPI 3.1 generated from the actual route catalog
+  (the accuracy test proves every documented path maps to a real file).
+- `GET /llms.txt` — concise machine-readable digest for coding agents:
+  what the service is, authentication, the real endpoint list, hard rules.
+- `GET /llms-full.txt` — the full documentation set (getting started,
+  projects, collections, CRUD, API keys, JWT, JWKS, storage, S3, AI agents,
+  self-hosting) in one plain-text document.
+- `GET /docs` — the same topics as human-readable HTML pages
+  (`/docs/getting-started … /docs/self-hosting`), including
+  `/docs/ai` (AI-agent integration guide) and `/docs/ai-agent`
+  (copy-ready plain-text onboarding brief).
+- `GET /.well-known/telegraph.json` — service metadata: endpoints,
+  authentication summary, capability flags (including honest `false`
+  entries), and limits.
+- `GET /.well-known/jwks.json` — public JWT verification keys.
+
+All of them are generated from the same modules that implement the API
+(shared route catalog, scopes, TTLs, limits), so the documentation cannot
+drift from the real surface. They contain configuration names and
+credential *prefixes* only — never secret values — and are public and
+cacheable.
+
 | Connect | Developer onboarding center: Quick Start, Environment, API, SDK / cURL with project-specific examples |
 | Settings | Project name/slug/status and legacy workspace link |
 
