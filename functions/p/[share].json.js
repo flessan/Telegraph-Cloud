@@ -1,6 +1,6 @@
-import { createPublicCollectionShareService } from '../../cloud/public-collection-share.js';
-import { createProjectRegistry } from '../../cloud/project-registry.js';
-import { createTelegramDocumentDatabase, parseDocumentListQuery } from '../../cloud/document-database.js';
+import { createPublicCollectionShareService } from '../cloud/public-collection-share.js';
+import { createProjectRegistry } from '../cloud/project-registry.js';
+import { createTelegramDocumentDatabase, parseDocumentListQuery } from '../cloud/document-database.js';
 
 function jsonResponse(body, { status = 200, headers = {} } = {}) {
   return new Response(body === null ? null : JSON.stringify(body), {
