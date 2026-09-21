@@ -376,6 +376,61 @@ describe('Cloud console (real page + modules, scripted API)', function () {
     assert.ok(!ctx.calls.some((c) => c.method === 'POST' && c.url.endsWith('/db/collections')));
   });
 
+  it('API Explorer shows method, auth, request body, response, and cURL/JS examples', async function () {
+    ctx = await bootConsole();
+    await goto(ctx.win, `#/project/${PROJECT.project_id}/api?tab=explorer`);
+    assert.deepStrictEqual(ctx.errors, []);
+
+    // The five generic CRUD operations, in order.
+    const cards = ctx.all('[data-explorer-endpoint]');
+    assert.deepStrictEqual(cards.map((c) => c.getAttribute('data-explorer-endpoint')),
+      ['GET', 'POST', 'GET', 'PATCH', 'DELETE']);
+
+    // Every card shows authentication.
+    for (const card of cards) {
+      assert.ok(card.textContent.includes('Bearer tg_live_…'), 'auth shown');
+      assert.ok(card.textContent.includes('Response'), 'response example shown');
+    }
+    // Request bodies only on POST/PATCH/DELETE.
+    const withBody = cards.filter((c) => c.textContent.includes('Request body'));
+    assert.strictEqual(withBody.length, 3, 'request body sections on mutating endpoints');
+
+    // cURL visible by default; the JavaScript tab switches the snippet.
+    assert.match(ctx.text(), /curl -s/);
+    const jsTab = Array.from(cards[0].querySelectorAll('button'))
+      .find((b) => b.textContent.trim() === 'JavaScript');
+    click(jsTab);
+    await tick(10);
+    assert.match(cards[0].textContent, /await fetch\(/);
+
+    // Record-level cards carry a record-ID input; Try-it refuses to run
+    // without one and performs no request.
+    const recordCards = cards.filter((c) => c.getAttribute('data-explorer-endpoint') !== 'GET'
+      || c.textContent.includes('Read one document'));
+    const idInputs = cards.map((c) => c.querySelector('input[aria-label="Record ID"]')).filter(Boolean);
+    assert.strictEqual(idInputs.length, 3);
+    const tryIt = Array.from(cards[2].querySelectorAll('button')).find((b) => b.textContent.trim() === 'Try it');
+    const callsBefore = ctx.calls.length;
+    click(tryIt);
+    await tick(20);
+    // The guard announces through the aria-live region (asserted there: the
+    // toast element is cached per module instance across harness boots).
+    assert.ok(/Enter a record ID/.test(ctx.doc.getElementById('c-live').textContent), 'guarded toast');
+    assert.strictEqual(ctx.calls.length, callsBefore, 'no request without a record ID');
+
+    // A typed record ID flows into the copied snippets.
+    const idCard = cards[2];
+    idInputs[0].value = 'rec_test0001';
+    idInputs[0].dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+    await tick(10);
+    click(Array.from(idCard.querySelectorAll('button')).find((b) => b.textContent.trim() === 'cURL'));
+    await tick(10);
+    assert.ok(idCard.textContent.includes('rec_test0001'), 'snippet uses the entered ID');
+
+    // The Explorer links the OpenAPI documents.
+    assert.ok(ctx.all('a').some((a) => (a.getAttribute('href') || '').endsWith('/openapi.json')));
+  });
+
   it('creates records only inside the open collection (no implicit collections)', async function () {
     ctx = await bootConsole();
     await goto(ctx.win, `#/project/${PROJECT.project_id}/data?tab=records&collection=users`);

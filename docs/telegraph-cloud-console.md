@@ -40,6 +40,18 @@ Per-project sections (project id comes from the verified session/URL scope):
 | Data | Telegraph Database collections, JSON records, revision metadata, schemas |
 | Files | Drive (folders, uploads, trash/star), flat objects list, and the S3 endpoint + SigV4 credentials — one object engine, three surfaces |
 | API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, request explorer, generated documentation links |
+
+### API Explorer
+
+The API tab's Explorer renders the five generic CRUD operations for any
+collection (list, create, read, update, delete) with: method badge, endpoint
+path, parameter table, authentication (`Bearer tg_live_…`), the example
+request body (schema-aware when the collection has fields), the example
+response, and copy-ready cURL / JavaScript / Python snippets. Record-level
+cards carry a record-ID field that feeds both "Try it" (which runs against
+the dashboard-session project route, never with a developer key from the
+browser) and the snippets. The Explorer links `/openapi.json` and the
+project-aware OpenAPI document.
 | Connect | Per-project `.env`, cURL, and client examples generator |
 | Settings | Project name/slug/status and legacy workspace link |
 

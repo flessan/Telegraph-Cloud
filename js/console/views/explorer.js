@@ -79,6 +79,14 @@ export async function renderExplorer(container, projectId, query) {
       ]));
       return;
     }
+    const origin = window.location.origin;
+    wrap.append(h('p', { style: { margin: '0 0 12px', color: 'var(--c-text-2)', fontSize: '13px' } }, [
+      ct('The full surface is also described by '),
+      h('a', { href: `${origin}/openapi.json`, target: '_blank', rel: 'noopener', style: { color: 'var(--c-primary)' } }, '/openapi.json'),
+      ' · ',
+      h('a', { href: `${origin}/api/projects/${encodeURIComponent(projectId)}/openapi.json`, target: '_blank', rel: 'noopener', style: { color: 'var(--c-primary)' } }, ct('project OpenAPI with schema-aware examples')),
+      '.',
+    ]));
     const name = def.name;
     const sample = sampleDocument(def);
     const sampleJson = JSON.stringify(sample, null, 2);
@@ -137,45 +145,53 @@ export async function renderExplorer(container, projectId, query) {
 
   function endpointCard(endpoint, def, sampleJson) {
     const origin = window.location.origin;
-    const url = origin + endpoint.path.replace('{id}', '{id}');
     const auth = 'Bearer tg_live_…';
+    const isRecordLevel = endpoint.path.includes('{id}');
+    // Record-level Try-it and snippets use a real ID supplied by the user;
+    // snippets fall back to a $RECORD_ID shell/environment placeholder.
+    let recordId = '';
+
+    function curlTarget() {
+      return origin + endpoint.path.replace('{id}', recordId || '$RECORD_ID');
+    }
 
     function curlText() {
-      const lines = [`curl -s ${url.replace('{id}', 'rec_…')}`];
-      if (endpoint.method !== 'GET') lines[0] = `curl -s -X ${endpoint.method} ${url.replace('{id}', 'rec_…')}`;
-      lines.push(`  -H "Authorization: Bearer $TELEGRAPH_API_KEY"`);
+      const target = curlTarget();
+      const lines = [endpoint.method === 'GET'
+        ? `curl -s ${target}`
+        : `curl -s -X ${endpoint.method} ${target}`];
+      lines.push('  -H "Authorization: Bearer $TELEGRAPH_API_KEY"');
       if (endpoint.body) {
-        lines.push(`  -H "Content-Type: application/json"`);
+        lines.push('  -H "Content-Type: application/json"');
         lines.push(`  -d '${endpoint.body}'`);
-      }
-      if (endpoint.method === 'GET' && endpoint.path.includes('limit')) {
-        lines.splice(1, 0, `  "${url.replace('{id}', 'rec_…')}?limit=20"`);
-        lines[0] = 'curl -s';
       }
       return lines.join(' \\\n');
     }
 
     function jsText() {
       const method = endpoint.method.toLowerCase();
-      const bodyLine = endpoint.body ? `  method: '${method}',\n  headers: { 'Authorization': \`Bearer \${process.env.TELEGRAPH_API_KEY}\`, 'Content-Type': 'application/json' },\n  body: JSON.stringify(${endpoint.body}),` : `  headers: { 'Authorization': \`Bearer \${process.env.TELEGRAPH_API_KEY}\` },`;
-      return `const res = await fetch('${url.replace('{id}', 'rec_…')}', {\n${bodyLine}\n});\nconst json = await res.json();`;
+      const url = curlTarget().replace('$RECORD_ID', '${RECORD_ID}');
+      const bodyLine = endpoint.body
+        ? `  method: '${method}',\n  headers: { 'Authorization': \`Bearer \${process.env.TELEGRAPH_API_KEY}\`, 'Content-Type': 'application/json' },\n  body: JSON.stringify(${endpoint.body}),`
+        : `  method: '${method}',\n  headers: { 'Authorization': \`Bearer \${process.env.TELEGRAPH_API_KEY}\` },`;
+      return `const res = await fetch('${url}', {\n${bodyLine}\n});\nconst json = await res.json();`;
     }
 
     function pyText() {
-      const method = endpoint.method;
+      const url = curlTarget().replace('$RECORD_ID', '${RECORD_ID}');
       const lines = [
-        `import os`,
-        `import requests`,
-        ``,
-        `response = requests.${method.toLowerCase()}(`,
-        `    "${url.replace('{id}', 'rec_…')}",`,
-        `    auth=("", os.environ["TELEGRAPH_API_KEY"]),`,
+        'import os',
+        'import requests',
+        '',
+        `response = requests.${endpoint.method.toLowerCase()}(`,
+        `    "${url}",`,
+        `    headers={"Authorization": f"Bearer {os.environ['TELEGRAPH_API_KEY']}"},`,
       ];
       if (endpoint.body) {
         lines.push(`    json=${endpoint.body.replace(/\n /g, '').replace(/\n/g, '')},`);
       }
-      lines.push(`)`);
-      lines.push(`print(response.json())`);
+      lines.push(')');
+      lines.push('print(response.json())');
       return lines.join('\n');
     }
 
@@ -206,17 +222,35 @@ export async function renderExplorer(container, projectId, query) {
         }, label))));
       codeWrap.append(codeBlock(texts[activeLang], {}));
     }
-    renderCode();
+
+    function sectionLabel(text) {
+      return h('p', { style: { margin: '10px 0 6px', fontSize: '12px', color: 'var(--c-text-2)', fontWeight: '600' } }, text);
+    }
+
+    // Record ID control for record-level endpoints: feeds Try-it and, when
+    // filled, the copied snippets.
+    const recordIdInput = isRecordLevel
+      ? h('input', {
+        class: 'c-input', type: 'text', placeholder: 'rec_…', spellcheck: 'false',
+        'aria-label': ct('Record ID'), style: { width: '260px', fontFamily: 'var(--c-font-mono, monospace)' },
+        oninput: (event) => { recordId = event.target.value.trim(); renderCode(); },
+      })
+      : null;
 
     const responseEl = h('pre', { style: { display: 'none' } }, '');
 
     const tryIt = async () => {
       // Runs against the dashboard-session project route (this browser's
       // console session), never with a developer key from the client.
+      if (isRecordLevel && !recordId) {
+        toast(ct('Enter a record ID to try this endpoint.'), { kind: 'error' });
+        recordIdInput?.focus();
+        return;
+      }
       tryItBtn.disabled = true;
       try {
         const path = endpoint.path
-          .replace('{id}', 'rec_…')
+          .replace('{id}', encodeURIComponent(recordId))
           .replace(/^\/api\/db/, `/api/projects/${encodeURIComponent(projectId)}/db`);
         const init = { method: endpoint.method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
         if (endpoint.body) {
@@ -237,8 +271,9 @@ export async function renderExplorer(container, projectId, query) {
       }
     };
     const tryItBtn = h('button', { class: 'c-btn outlined sm', onClick: tryIt }, ct('Try it'));
+    renderCode();
 
-    return h('div', { class: 'c-card', style: { padding: '14px 16px', marginBottom: '12px' } }, [
+    return h('div', { class: 'c-card', style: { padding: '14px 16px', marginBottom: '12px' }, 'data-explorer-endpoint': endpoint.method }, [
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } }, [
         h('span', { class: 'c-badge', style: { fontFamily: 'monospace', minWidth: '58px', textAlign: 'center' } }, endpoint.method),
         h('code', { style: { fontSize: '13px', wordBreak: 'break-all' } }, endpoint.path),
@@ -249,9 +284,22 @@ export async function renderExplorer(container, projectId, query) {
         h('span', { style: { fontSize: '12px', color: 'var(--c-text-2)' } }, ct('Authentication')),
         h('code', {}, auth),
         copyButton(auth),
+        ...(isRecordLevel ? [
+          h('span', { style: { fontSize: '12px', color: 'var(--c-text-2)', marginLeft: '8px' } }, ct('Record ID')),
+          recordIdInput,
+        ] : []),
         h('span', { style: { flex: 1 } }),
         tryItBtn,
       ]),
+      endpoint.body ? h('div', {}, [
+        sectionLabel(ct('Request body')),
+        codeBlock(endpoint.body, {}),
+      ]) : null,
+      h('div', {}, [
+        sectionLabel(ct('Response')),
+        codeBlock(JSON.stringify(endpoint.response, null, 2), {}),
+      ]),
+      sectionLabel(ct('Examples')),
       codeWrap,
       responseEl,
     ]);

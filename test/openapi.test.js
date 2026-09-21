@@ -108,6 +108,18 @@ describe('OpenAPI document generation', function () {
     assert.deepStrictEqual(new Set(Object.keys(doc.paths)), expectedPaths);
   });
 
+  it('documents the complete generic CRUD surface for collections', async function () {
+    const doc = await callGlobalRoute('https://host.example');
+    // Generic collection routes expose the five runtime CRUD operations; no
+    // per-collection source files or paths are generated.
+    assert.deepStrictEqual(
+      Object.keys(doc.paths['/api/db/{collection}']).sort(), ['get', 'post'],
+    );
+    assert.deepStrictEqual(
+      Object.keys(doc.paths['/api/db/{collection}/{recordId}']).sort(), ['delete', 'get', 'patch'],
+    );
+  });
+
   it('applies the correct authentication and scope per operation', async function () {
     const doc = await callGlobalRoute('https://host.example');
     assert.deepStrictEqual(doc.paths['/api/db/{collection}'].get.security, [{ bearerApi: ['db:read'] }]);
