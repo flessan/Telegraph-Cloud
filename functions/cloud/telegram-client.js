@@ -3,9 +3,12 @@ import { isEmptyBinding } from '../utils/http.js';
 // All Bot API URLs and fetches live here. Storage, document-journal, and future
 // API services use this client rather than constructing Telegram URLs directly.
 export const TELEGRAM_API_ORIGIN = 'https://api.telegram.org';
-export const MAX_TELEGRAM_RETRIES = 2;
+export const MAX_TELEGRAM_RETRIES = 3;
+export const MAX_TELEGRAM_RETRY_DELAY_MS = 60 * 1000;
 
 const SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo', 'sendDocument']);
+const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
+const RETRYABLE_STATUS = new Set([408, 429]);
 const DOWNLOAD_FORWARD_HEADERS = [
   'Accept',
   'If-Modified-Since',
@@ -33,6 +36,32 @@ function isSafeTelegramFilePath(filePath) {
     && filePath.split('/').every((segment) => (
       SAFE_FILE_PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..'
     ));
+}
+
+function isRetryableStatus(status) {
+  return RETRYABLE_STATUS.has(status) || (status >= 500 && status <= 599);
+}
+
+function retryAfterMilliseconds(response, responseData, retryCount, randomImpl = Math.random) {
+  const candidates = [];
+  const header = response?.headers?.get?.('Retry-After');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) candidates.push(seconds * 1000);
+    else {
+      const retryDate = Date.parse(header);
+      if (Number.isFinite(retryDate)) candidates.push(retryDate - Date.now());
+    }
+  }
+  const telegramRetryAfter = responseData?.parameters?.retry_after;
+  if (Number.isFinite(telegramRetryAfter) && telegramRetryAfter >= 0) {
+    candidates.push(Number(telegramRetryAfter) * 1000);
+  }
+  const explicit = candidates.find((value) => Number.isFinite(value) && value >= 0);
+  const exponential = Math.min(1000 * (2 ** retryCount), 10 * 1000);
+  const jitter = Math.floor(Math.max(0, Math.min(1, Number(randomImpl()) || 0)) * 500);
+  const delay = explicit === undefined ? exponential + jitter : explicit;
+  return Math.max(250, Math.min(MAX_TELEGRAM_RETRY_DELAY_MS, Math.round(delay)));
 }
 
 export function validateTelegramConfig(env) {
@@ -68,15 +97,16 @@ export async function probeTelegramApi(env, { fetchImpl = globalThis.fetch } = {
 }
 
 export function getUploadTarget(file) {
-  if (file.type.startsWith('image/')) {
+  const mime = typeof file?.type === 'string' ? file.type : '';
+  if (mime.startsWith('image/')) {
     return { endpoint: 'sendPhoto', field: 'photo' };
   }
 
-  if (file.type.startsWith('audio/')) {
+  if (mime.startsWith('audio/')) {
     return { endpoint: 'sendAudio', field: 'audio' };
   }
 
-  if (file.type.startsWith('video/')) {
+  if (mime.startsWith('video/')) {
     return { endpoint: 'sendVideo', field: 'video' };
   }
 
@@ -133,7 +163,7 @@ export function createTelegramDownloadRequestInit(request) {
     headers: createTelegramDownloadHeaders(request),
     // Do not proxy request bodies to the Telegram file host. The documented
     // legacy file surface is GET/HEAD; retaining the requested method preserves
-    // compatibility without forwarding unrelated caller data upstream.
+    // compatibility without forwarding unrelated caller data.
   };
 }
 
@@ -152,12 +182,16 @@ export function telegramFileDownloadUrl(env, filePath) {
 export function createTelegramClient(env, {
   fetchImpl = globalThis.fetch,
   sleepImpl = sleep,
+  randomImpl = Math.random,
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('Telegram fetch implementation is unavailable');
   }
 
-  async function sendFormData(formData, apiEndpoint, { retryCount = 0 } = {}) {
+  async function sendFormData(formData, apiEndpoint, {
+    retryCount = 0,
+    fallbackUsed = false,
+  } = {}) {
     if (!SEND_ENDPOINTS.has(apiEndpoint)) {
       throw new Error('Unsupported Telegram upload endpoint');
     }
@@ -171,13 +205,28 @@ export function createTelegramClient(env, {
         return { success: true, data: responseData };
       }
 
-      if (retryCount < MAX_TELEGRAM_RETRIES && apiEndpoint === 'sendPhoto') {
-        // This preserves the legacy fallback for Telegram media validation
-        // failures while keeping the retry mechanics inside the client.
+      if (isRetryableStatus(response.status)) {
+        if (retryCount < MAX_TELEGRAM_RETRIES) {
+          await sleepImpl(retryAfterMilliseconds(response, responseData, retryCount, randomImpl));
+          return sendFormData(formData, apiEndpoint, {
+            retryCount: retryCount + 1,
+            fallbackUsed,
+          });
+        }
+        return {
+          success: false,
+          error: formatTelegramError(apiEndpoint, response, responseData),
+        };
+      }
+
+      if (MEDIA_SEND_ENDPOINTS.has(apiEndpoint) && !fallbackUsed) {
         const fallback = new FormData();
         fallback.append('chat_id', formData.get('chat_id'));
-        fallback.append('document', formData.get('photo'));
-        return sendFormData(fallback, 'sendDocument', { retryCount: retryCount + 1 });
+        fallback.append(
+          'document',
+          formData.get(apiEndpoint === 'sendPhoto' ? 'photo' : apiEndpoint === 'sendAudio' ? 'audio' : 'video'),
+        );
+        return sendFormData(fallback, 'sendDocument', { retryCount: 0, fallbackUsed: true });
       }
 
       return {
@@ -185,13 +234,14 @@ export function createTelegramClient(env, {
         error: formatTelegramError(apiEndpoint, response, responseData),
       };
     } catch (_) {
-      // Error instances can include a requested URL. Never serialize them to
-      // console/Sentry because that URL carries the bot token in its path.
-      console.error('Telegram network request failed.');
       if (retryCount < MAX_TELEGRAM_RETRIES) {
-        await sleepImpl(1000 * (retryCount + 1));
-        return sendFormData(formData, apiEndpoint, { retryCount: retryCount + 1 });
+        await sleepImpl(retryAfterMilliseconds(null, null, retryCount, randomImpl));
+        return sendFormData(formData, apiEndpoint, {
+          retryCount: retryCount + 1,
+          fallbackUsed,
+        });
       }
+      console.error('Telegram network request failed after bounded retries.');
       return { success: false, error: 'Network error occurred' };
     }
   }
@@ -236,7 +286,7 @@ export function createTelegramClient(env, {
 }
 
 async function parseTelegramResponse(response) {
-  const contentType = response.headers.get('Content-Type') || '';
+  const contentType = response?.headers?.get?.('Content-Type') || '';
   if (contentType.includes('application/json')) {
     return response.json();
   }
@@ -244,6 +294,7 @@ async function parseTelegramResponse(response) {
 }
 
 function formatTelegramError(apiEndpoint, response, responseData) {
+  const status = Number(response?.status);
   const details = responseData?.description || responseData?.error_code || 'Upload to Telegram failed';
-  return `Telegram ${apiEndpoint} failed: ${response.status} ${details}`;
+  return `Telegram ${apiEndpoint} failed: ${Number.isFinite(status) ? status : 'network'} ${details}`;
 }
