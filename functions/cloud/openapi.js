@@ -29,6 +29,8 @@ const DATA_PLANE = [
   { path: '/api/storage/{bucket}/{key}', methods: ['put', 'get', 'head', 'delete'] },
   { path: '/s3/{bucket}', methods: ['get'] },
   { path: '/s3/{bucket}/{key}', methods: ['get', 'head', 'put', 'delete'] },
+  { path: '/api/auth/token', methods: ['post'] },
+  { path: '/.well-known/jwks.json', methods: ['get'] },
   { path: '/api/health', methods: ['get'] },
   { path: '/openapi.json', methods: ['get'] },
 ];
@@ -76,7 +78,7 @@ function bearerSecurity(scope) {
 function operationFor(route, method, { collectionExamples = [] } = {}) {
   const path = route.path;
   const kind = path.startsWith('/api/db') ? 'db' : path.startsWith('/api/storage') ? 'storage' : null;
-  const isPublic = path === '/api/health' || path === '/openapi.json';
+  const isPublic = path === '/api/health' || path === '/openapi.json' || path === '/.well-known/jwks.json';
   const security = isPublic ? [] : kind === 'storage' || path.startsWith('/s3/')
     ? (path.startsWith('/s3/') ? [{ awsSigV4: [] }] : [bearerSecurity(scopeFor(method, kind))])
     : [bearerSecurity(scopeFor(method, kind))];
@@ -106,6 +108,85 @@ function operationFor(route, method, { collectionExamples = [] } = {}) {
         description: 'OpenAPI 3.1 document.',
         content: { 'application/json': { schema: { type: 'object' } } },
       },
+    };
+    return op;
+  }
+
+  // ------------------------------------------------------------- auth/jwks
+  if (path === '/.well-known/jwks.json') {
+    op.summary = 'Public JWT verification keys (JWKS).';
+    op.description = 'ES256 (ECDSA P-256) public signing keys for verifying short-lived JWTs. Current and retired keys are both published during a rotation window. Public keys only; private material is never published.';
+    op.responses = {
+      200: {
+        description: 'A JSON Web Key Set, cacheable for 5 minutes.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                keys: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      kty: { type: 'string', example: 'EC' },
+                      crv: { type: 'string', example: 'P-256' },
+                      x: { type: 'string' },
+                      y: { type: 'string' },
+                      kid: { type: 'string' },
+                      alg: { type: 'string', example: 'ES256' },
+                      use: { type: 'string', example: 'sig' },
+                      key_ops: { type: 'array', items: { type: 'string' }, example: ['verify'] },
+                    },
+                    required: ['kty', 'crv', 'x', 'y', 'kid', 'alg'],
+                  },
+                },
+              },
+              required: ['keys'],
+            },
+          },
+        },
+      },
+    };
+    return op;
+  }
+
+  if (path === '/api/auth/token' && method === 'post') {
+    op.summary = 'Exchange a developer credential for a short-lived JWT.';
+    op.description = 'Authenticates the Bearer credential (a tg_live_ API key, or an unexpired JWT) and issues an ES256 JWT — 15 minutes by default, 60–3600 s — that inherits the project and scopes of the credential used to obtain it. Verify issued tokens against /.well-known/jwks.json.';
+    op.requestBody = {
+      required: false,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              expires_in: { type: 'integer', minimum: 60, maximum: 3600, default: 900, description: 'Requested lifetime in seconds; only a shortening of the default is honored within bounds.' },
+            },
+          },
+          example: { expires_in: 900 },
+        },
+      },
+    };
+    op.responses = {
+      200: {
+        description: 'The issued access token.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                access_token: { type: 'string', description: 'Compact ES256 JWT.' },
+                token_type: { type: 'string', example: 'Bearer' },
+                expires_in: { type: 'integer', example: 900 },
+                scope: { type: 'string', example: 'db:read db:write' },
+              },
+              required: ['access_token', 'token_type', 'expires_in', 'scope'],
+            },
+          },
+        },
+      },
+      ...errorMap(['400: malformed_json, invalid_token_request or invalid_token_ttl', '401: invalid_api_key or invalid_token', '429: rate_limited', '500: internal_error']),
     };
     return op;
   }
@@ -455,7 +536,7 @@ export function buildOpenApiDocument({ origin, project = null }) {
       { name: 'Database', description: 'Versioned JSON document collections.' },
       { name: 'Storage', description: 'Object storage (Bearer developer keys).' },
       { name: 'S3', description: 'S3-compatible endpoint (SigV4 credentials).' },
-      { name: 'Platform', description: 'Health and discovery endpoints.' },
+      { name: 'Platform', description: 'Health, discovery, and authentication endpoints.' },
     ],
     paths,
     components: {
@@ -464,7 +545,7 @@ export function buildOpenApiDocument({ origin, project = null }) {
           type: 'http',
           scheme: 'bearer',
           bearerFormat: 'API key',
-          description: 'Developer API key (tg_live_…) with scopes: db:read, db:write, storage:read, storage:write. The key determines the project boundary; caller-supplied project IDs are never trusted.',
+          description: 'Developer API key (tg_live_…) with scopes: db:read, db:write, storage:read, storage:write; or a short-lived ES256 JWT issued by POST /api/auth/token and verifiable via /.well-known/jwks.json. The key or token determines the project boundary; caller-supplied project IDs are never trusted.',
         },
         awsSigV4: {
           type: 'apiKey',

@@ -39,9 +39,7 @@ Per-project sections (project id comes from the verified session/URL scope):
 | Overview | Project scopes, counts from real stats endpoints, quick links |
 | Data | Telegraph Database collections, JSON records, revision metadata, schemas |
 | Files | Drive (folders, uploads, trash/star), flat objects list, and the S3 endpoint + SigV4 credentials — one object engine, three surfaces |
-| API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, request explorer, generated documentation links |
-
-### Connect — developer onboarding center
+| API | Real endpoint catalog, `tg_live_…` Bearer keys with `db:`/`storage:` scopes, short-lived JWTs (`POST /api/auth/token`, JWKS verification), request explorer, generated documentation links |
 
 ### Connect — developer onboarding center
 
@@ -190,6 +188,19 @@ Two explicitly separate credential kinds:
   APIs. Scopes are `db:read`, `db:write`, `storage:read`, `storage:write`.
 - **S3 Credentials** (`tgsk_live_…` + `secret_access_key`): SigV4 only, with
   `s3:read`/`s3:write`. They never work as Bearer keys.
+
+- **Short-lived JWTs** (derived, never stored): `POST /api/auth/token`
+  exchanges a `tg_live_…` key (or an unexpired JWT) for an ES256
+  (ECDSA P-256) JWT that inherits the credential's project and scopes.
+  Tokens are compact JWS with `iss`/`aud`/`sub`/project/scopes/`iat`/`exp`/
+  `jti` claims and a `kid` header; default lifetime 900 s, bounded to
+  60–3600 s. Any Bearer-protected developer route accepts them alongside
+  API keys. Verifiers resolve public keys from `/.well-known/jwks.json`
+  (public keys only — the private scalar is never published). Signing keys
+  rotate via `POST /api/auth/keys/rotate` (dashboard-gated): the previous
+  private key is purged from KV immediately, its public key stays published
+  so outstanding tokens keep verifying until expiry. Private keys live only
+  in KV and never appear in any response.
 
 The full secret is shown **exactly once**, in a dialog that requires explicit
 acknowledgement ("I saved the secret"); list endpoints return verifier-only

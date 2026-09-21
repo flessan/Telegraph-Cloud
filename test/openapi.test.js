@@ -76,6 +76,8 @@ describe('OpenAPI document generation', function () {
       '/api/storage/{bucket}/{key}': 'functions/api/storage/[bucket]/[[key]].js',
       '/s3/{bucket}': 'functions/s3/[[path]].js',
       '/s3/{bucket}/{key}': 'functions/s3/[[path]].js',
+      '/api/auth/token': 'functions/api/auth/token.js',
+      '/.well-known/jwks.json': 'functions/.well-known/jwks.json.js',
       '/api/health': 'functions/api/health.js',
       '/openapi.json': 'functions/openapi.json.js',
     };
@@ -89,6 +91,8 @@ describe('OpenAPI document generation', function () {
       'functions/api/db/[collection]/[id].js': { get: "request.method === 'GET'", patch: "request.method === 'PATCH'", delete: "request.method === 'DELETE'" },
       'functions/api/health.js': { get: 'onRequest' },
       'functions/openapi.json.js': { get: 'onRequest' },
+      'functions/api/auth/token.js': { post: 'onRequestPost' },
+      'functions/.well-known/jwks.json.js': { get: 'onRequestGet' },
     };
     for (const [openapiPath, file] of Object.entries(mapping)) {
       if (!methodEvidence[file]) continue;
@@ -131,6 +135,10 @@ describe('OpenAPI document generation', function () {
     // Public platform endpoints carry no security requirement.
     assert.deepStrictEqual(doc.paths['/api/health'].get.security, []);
     assert.deepStrictEqual(doc.paths['/openapi.json'].get.security, []);
+    assert.deepStrictEqual(doc.paths['/.well-known/jwks.json'].get.security, []);
+    // Token exchange accepts any Bearer developer credential (no scope gate);
+    // the issued token's scopes are bounded by the credential presented.
+    assert.deepStrictEqual(doc.paths['/api/auth/token'].post.security, [{ bearerApi: [] }]);
   });
 
   it('documents pagination, optimistic preconditions, and error codes honestly', async function () {

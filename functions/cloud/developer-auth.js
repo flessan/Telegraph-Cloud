@@ -1,4 +1,5 @@
 import { createDeveloperApiKeyService } from './developer-api-keys.js';
+import { createJwtAuthService, resolveJwtIssuer } from './jwt-auth.js';
 import { CloudForbiddenError, CloudUnauthorizedError } from './errors.js';
 
 /**
@@ -19,6 +20,10 @@ export function bearerDeveloperCredential(request) {
   return { supplied: false, credential: null };
 }
 
+// A compact JWS with three base64url segments. `tg_live_…` keys never contain
+// a dot, so the two credential forms cannot be confused.
+const JWT_COMPACT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
 function developerApiKeysForContext(context) {
   // Internal composition/test seam only. Browser request data never selects a
   // service or a project; production resolves the service from environment
@@ -26,11 +31,29 @@ function developerApiKeysForContext(context) {
   return context?.data?.developerApiKeys || createDeveloperApiKeyService(context?.env);
 }
 
+function jwtAuthForContext(context) {
+  return context?.data?.jwtAuth || createJwtAuthService(context?.env);
+}
+
+function assertDeveloperScope(authentication, scope, forbiddenCode, forbiddenMessage) {
+  if (scope && !authentication.scopes.includes(scope)) {
+    throw new CloudForbiddenError(forbiddenCode, forbiddenMessage);
+  }
+  return authentication;
+}
+
 /**
  * Authenticate an attempted Bearer request and enforce exactly one declared
- * developer scope. Returns null when no Bearer scheme was supplied, allowing a
- * caller such as the Phase 2/3 database middleware to retain its separate
- * dashboard-legacy mode. A storage route treats that null as 401 instead.
+ * developer scope. Accepts two credential forms, verified independently:
+ *
+ *   - `tg_live_…` developer API keys (unchanged behavior), and
+ *   - short-lived JWTs (ES256) issued by POST /api/auth/token, verified
+ *     against the deployment's published signing keys with iss/aud/exp and
+ *     the project + scopes claims.
+ *
+ * Returns null when no Bearer scheme was supplied, allowing a caller such as
+ * the Phase 2/3 database middleware to retain its separate dashboard-legacy
+ * mode. A storage route treats that null as 401 instead.
  */
 export async function authenticateDeveloperBearer(context, {
   scope = null,
@@ -42,9 +65,13 @@ export async function authenticateDeveloperBearer(context, {
   if (!bearer.credential) {
     throw new CloudUnauthorizedError('invalid_api_key', 'A valid developer API key is required.');
   }
-  const authentication = await developerApiKeysForContext(context).authenticate(bearer.credential);
-  if (scope && !authentication.scopes.includes(scope)) {
-    throw new CloudForbiddenError(forbiddenCode, forbiddenMessage);
+
+  if (JWT_COMPACT_SHAPE.test(bearer.credential)) {
+    const issuer = resolveJwtIssuer(context?.env, context.request);
+    const authentication = await jwtAuthForContext(context).verifyToken(bearer.credential, { issuer });
+    return assertDeveloperScope(authentication, scope, forbiddenCode, forbiddenMessage);
   }
-  return authentication;
+
+  const authentication = await developerApiKeysForContext(context).authenticate(bearer.credential);
+  return assertDeveloperScope(authentication, scope, forbiddenCode, forbiddenMessage);
 }

@@ -188,7 +188,9 @@ export function documentDatabaseForContext(context) {
   // data to override an authenticated developer project scope. Validate even
   // this trusted middleware value so a malformed internal state fails closed
   // instead of accidentally falling back to the unscoped legacy provider.
-  if (authentication?.authentication === 'developer_api_key') {
+  // Developer credentials — API key or short-lived JWT — both carry the
+  // verified project scope from the credential, never from request data.
+  if (authentication?.authentication === 'developer_api_key' || authentication?.authentication === 'jwt') {
     return createTelegramDocumentDatabase(context.env, {
       projectId: assertProjectId(authentication.project_id),
     });

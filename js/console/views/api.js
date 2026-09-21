@@ -50,8 +50,10 @@ function renderEndpoints(wrap, projectId) {
     ['DELETE', '/s3/{bucket}/{key}', 'SigV4', ct('S3 DeleteObject')],
     ['GET', '/api/health', 'Public', ct('Deployment health signal')],
     ['GET', '/openapi.json', 'Public', ct('Machine-readable API description')],
+    ['POST', '/api/auth/token', 'Bearer · key or JWT', ct('Exchange an API key or unexpired JWT for a short-lived ES256 JWT (60–3600 s)')],
+    ['GET', '/.well-known/jwks.json', 'Public', ct('Public JWT verification keys (rotation-aware)')],
+    ['POST', '/api/auth/keys/rotate', 'Dashboard', ct('Rotate JWT signing keys; outstanding tokens keep verifying')],
     ['GET', '/llms.txt · /llms-full.txt · /docs/ai', 'Public', ct('AI-agent documentation')],
-    ['GET', '/.well-known/jwks.json', 'Public', ct('Public JWT verification keys')],
     ['GET', '/.well-known/telegraph.json', 'Public', ct('Service metadata')],
   ];
 
