@@ -153,8 +153,8 @@ describe('upload function', function () {
       },
     }));
 
-    assert.strictEqual(res.status, 500);
-    assert.deepStrictEqual(JSON.parse(await res.text()), { error: 'No file uploaded' });
+    assert.strictEqual(res.status, 400);
+    assert.deepStrictEqual(JSON.parse(await res.text()), { error: 'no_file' });
   });
 
   it('requires basic auth when upload credentials are configured', async function () {
@@ -364,9 +364,9 @@ describe('upload function', function () {
       env: { disable_telemetry: 'true' },
     }));
 
-    assert.strictEqual(res.status, 500);
+    assert.strictEqual(res.status, 503);
     assert.deepStrictEqual(JSON.parse(await res.text()), {
-      error: 'Missing required environment variable: TG_Bot_Token',
+      error: 'telegram_not_configured',
     });
   });
 });
