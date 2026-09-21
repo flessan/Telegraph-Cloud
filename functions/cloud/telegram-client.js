@@ -5,6 +5,7 @@ import { isEmptyBinding } from '../utils/http.js';
 export const TELEGRAM_API_ORIGIN = 'https://api.telegram.org';
 export const MAX_TELEGRAM_RETRIES = 3;
 export const MAX_TELEGRAM_RETRY_DELAY_MS = 60 * 1000;
+export const TELEGRAM_REQUEST_TIMEOUT_MS = 10 * 1000;
 
 const SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo', 'sendDocument']);
 const MEDIA_SEND_ENDPOINTS = new Set(['sendPhoto', 'sendAudio', 'sendVideo']);
@@ -20,6 +21,20 @@ const SAFE_FILE_PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
+}
+
+async function fetchWithTimeout(fetchImpl, input, init, timeoutMs = TELEGRAM_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function hasBotToken(env) {
@@ -267,7 +282,7 @@ export function createTelegramClient(env, {
 
     const apiUrl = botApiUrl(env, apiEndpoint);
     try {
-      const response = await fetchImpl(apiUrl, { method: 'POST', body: formData });
+      const response = await fetchWithTimeout(fetchImpl, apiUrl, { method: 'POST', body: formData });
       const responseData = await parseTelegramResponse(response);
 
       if (response.ok) {
@@ -302,7 +317,10 @@ export function createTelegramClient(env, {
         success: false,
         error: formatTelegramError(apiEndpoint, response, responseData),
       };
-    } catch (_) {
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { success: false, error: 'Network error occurred' };
+      }
       if (retryCount < MAX_TELEGRAM_RETRIES) {
         await sleepImpl(retryAfterMilliseconds(null, null, retryCount, randomImpl));
         return sendFormData(formData, apiEndpoint, {
@@ -321,7 +339,7 @@ export function createTelegramClient(env, {
     for (let retryCount = 0; retryCount <= 2; retryCount += 1) {
       try {
         const url = `${botApiUrl(env, 'getFile')}?file_id=${encodeURIComponent(fileId)}`;
-        const response = await fetchImpl(url, { method: 'GET' });
+        const response = await fetchWithTimeout(fetchImpl, url, { method: 'GET' });
         if (response.ok) {
           const data = await response.json();
           const filePath = data?.ok && typeof data?.result?.file_path === 'string'
@@ -340,7 +358,11 @@ export function createTelegramClient(env, {
         }
         console.error('Telegram getFile request failed.');
         return null;
-      } catch (_) {
+      } catch (error) {
+        if (isAbortError(error)) {
+          console.error('Telegram getFile request timed out.');
+          return null;
+        }
         if (retryCount < 2) {
           await sleepImpl(retryableNetworkDelay(retryCount, randomImpl));
           continue;
@@ -355,12 +377,15 @@ export function createTelegramClient(env, {
   async function fetchDownload(fileUrl, request) {
     for (let retryCount = 0; retryCount <= 2; retryCount += 1) {
       try {
-        const response = await fetchImpl(fileUrl, createTelegramDownloadRequestInit(request));
+        const response = await fetchWithTimeout(fetchImpl, fileUrl, createTelegramDownloadRequestInit(request));
         if (!isRetryableStatus(response.status) || retryCount >= 2) {
           return response;
         }
         await sleepImpl(retryAfterMilliseconds(response, null, retryCount, randomImpl));
       } catch (error) {
+        if (isAbortError(error)) {
+          throw new Error('Telegram download timed out');
+        }
         if (retryCount >= 2) {
           throw error;
         }
