@@ -5,8 +5,20 @@ import { jsonResponse } from '../../utils/http.js';
 // This is an intentionally local burst guard, not a distributed quota, billing
 // meter, or durable rate limiter. API-key project scope remains the authority.
 const MUTATION_WINDOW_MS = 60 * 1000;
-const MAX_MUTATIONS_PER_WINDOW = 20;
+const DEFAULT_MAX_MUTATIONS_PER_WINDOW = 20;
+const MAX_CONFIGURED_MUTATIONS_PER_WINDOW = 500;
+const MUTATION_RATE_ENV = 'TELEGRAPH_CLOUD_STORAGE_MUTATIONS_PER_MINUTE';
 const mutationBuckets = new Map();
+
+function configuredMutationLimit(env) {
+  const raw = env?.[MUTATION_RATE_ENV];
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_MAX_MUTATIONS_PER_WINDOW;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_CONFIGURED_MUTATIONS_PER_WINDOW) {
+    return DEFAULT_MAX_MUTATIONS_PER_WINDOW;
+  }
+  return parsed;
+}
 
 function requiredScope(method) {
   if (method === 'GET' || method === 'HEAD') return 'storage:read';
@@ -14,10 +26,10 @@ function requiredScope(method) {
   return null;
 }
 
-function consumeMutationSlot(projectId, timestamp = Date.now()) {
+function consumeMutationSlot(projectId, maxMutations, timestamp = Date.now()) {
   const cutoff = timestamp - MUTATION_WINDOW_MS;
   const recent = (mutationBuckets.get(projectId) || []).filter((entry) => entry > cutoff);
-  if (recent.length >= MAX_MUTATIONS_PER_WINDOW) {
+  if (recent.length >= maxMutations) {
     mutationBuckets.set(projectId, recent);
     return { allowed: false, retryAfter: Math.max(1, Math.ceil((recent[0] + MUTATION_WINDOW_MS - timestamp) / 1000)) };
   }
@@ -48,7 +60,10 @@ export async function storageAuthentication(context) {
 export async function storageMutationRateLimit(context) {
   if (!['PUT', 'DELETE'].includes(context.request.method)) return context.next();
   const projectId = context.data?.storageAuthentication?.project_id;
-  const result = consumeMutationSlot(typeof projectId === 'string' ? projectId : 'unknown');
+  const result = consumeMutationSlot(
+    typeof projectId === 'string' ? projectId : 'unknown',
+    configuredMutationLimit(context.env),
+  );
   if (result.allowed) return context.next();
   return jsonResponse({ error: 'rate_limited' }, {
     status: 429,
