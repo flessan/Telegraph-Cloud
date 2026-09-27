@@ -150,12 +150,16 @@ function withCors(response, request, env) {
 
 function addCorsHeaders(headers, request, env) {
     const origin = request.headers.get('Origin');
-    const allowed = String(env.CORS_ALLOWED_ORIGINS || 'https://resontune.pages.dev,https://tune.thio.cc.cd')
+    // Legacy file serving has its own CORS helper. Keep local Vite origins
+    // available for browser-based tooling while allowing production callers
+    // through the configurable CORS_ALLOWED_ORIGINS variable.
+    const defaults = 'https://resontune.pages.dev,https://tune.thio.cc.cd,http://localhost:5173,http://127.0.0.1:5173';
+    const configured = String(env.CORS_ALLOWED_ORIGINS || defaults)
         .split(',')
         .map(value => value.trim())
         .filter(Boolean);
 
-    if (origin && allowed.includes(origin)) {
+    if (origin && configured.includes(origin)) {
         headers.set('Access-Control-Allow-Origin', origin);
         headers.set('Vary', 'Origin');
     }
