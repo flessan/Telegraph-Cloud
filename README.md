@@ -1,5 +1,9 @@
 # Telegraph Storage — customized Telegraph-Image fork
 
+<div align="center">
+   <img style="width:1200px" src="bg.svg">
+</div>
+
 A local-first storage workspace built on Telegraph-Image. This fork keeps the existing Cloudflare Pages, Telegram/R2 storage, upload API, moderation, and stable `/file/*` serving paths, while reorganizing the interface into a public product page, focused sign-in, and one complete dashboard.
 
 English|[中文](README-zh.md)
