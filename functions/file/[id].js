@@ -153,7 +153,7 @@ function addCorsHeaders(headers, request, env) {
     // Legacy file serving has its own CORS helper. Keep local Vite origins
     // available for browser-based tooling while allowing production callers
     // through the configurable CORS_ALLOWED_ORIGINS variable.
-    const defaults = 'https://resontune.pages.dev,https://tune.thio.cc.cd,http://localhost:5173,http://127.0.0.1:5173';
+    const defaults = 'https://nokintosh.pages.dev,https://resontune.pages.dev,https://tune.thio.cc.cd,http://localhost:5173,http://127.0.0.1:5173';
     const configured = String(env.CORS_ALLOWED_ORIGINS || defaults)
         .split(',')
         .map(value => value.trim())
